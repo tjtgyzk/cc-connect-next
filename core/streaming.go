@@ -156,6 +156,18 @@ type RichCardMarkdownTransformer interface {
 	TransformRichCardMarkdown(ctx context.Context, replyCtx any, markdown string) string
 }
 
+// RichCardFinalDeliveryPolicy lets a platform request a new final card when
+// updating the lifecycle card cannot provide the required notification
+// semantics. The engine preserves the rich payload and reply context, then
+// tracks the replacement before removing the old card so recall stays safe.
+// The engine first checks the workspace-rendered answer before platform
+// transforms. A true result bypasses RichCardTerminalTextFallback and is
+// revalidated against the prepared final body; a false second result retains
+// the existing card instead of sending a new notification.
+type RichCardFinalDeliveryPolicy interface {
+	RequiresNewFinalCard(ctx context.Context, replyCtx any, markdown string) bool
+}
+
 // RichCardTerminalTextFallback lets a rich-card platform preserve native
 // semantics that its card transport cannot provide. The platform first
 // prepares the final markdown and reports whether an ordinary text message is

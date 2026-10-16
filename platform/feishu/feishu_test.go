@@ -1172,7 +1172,11 @@ func TestOnMessageThreadIsolationAdmitsAttachmentWithoutMention(t *testing.T) {
 		t.Fatalf("thread %q should be marked active after @bot text", threadKey)
 	}
 	select {
-	case <-received:
+	case receivedMessage := <-received:
+		rc, ok := receivedMessage.ReplyCtx.(replyContext)
+		if !ok || rc.replyMentionID != userOpenID {
+			t.Fatal("group reply context must retain the verified triggering sender for final-card mentions")
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the opening @bot text to dispatch")
 	}

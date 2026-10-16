@@ -254,6 +254,7 @@ type replyContext struct {
 	sessionKey      string
 	threadID        string
 	directUserID    string
+	replyMentionID  string // verified human sender of the triggering group message
 	bootstrapThread bool
 	bootstrapQueued bool
 	bootstrapWait   <-chan struct{}
@@ -1984,6 +1985,9 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	parentID := stringValue(msg.ParentId)
 
 	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey, threadID: stringValue(msg.ThreadId)}
+	if chatType == "group" && stringValue(sender.SenderType) == "user" && sender.SenderId != nil {
+		rctx.replyMentionID = stringValue(sender.SenderId.OpenId)
+	}
 	if chatType == "p2p" && stringValue(msg.ThreadId) == "" {
 		rctx.directUserID = userID
 	}
@@ -7795,7 +7799,7 @@ func richCardPrintStep(markdown string) int {
 }
 
 func richCardSummary(markdown, fallback string) string {
-	text := strings.TrimSpace(markdown)
+	text := richCardPreviewText(markdown)
 	if text == "" {
 		return fallback
 	}

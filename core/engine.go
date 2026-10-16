@@ -8221,11 +8221,13 @@ func (d *turnDelivery) deliver() {
 		}
 		slog.Info("silent reply suppressed", "session", session.ID)
 	} else if hasRichCard {
-		// Keep the entire answer on the one quoted lifecycle card. Feishu's
-		// renderer converts tables beyond its per-card component budget to
-		// fenced text, avoiding extra unquoted overflow cards.
+		requiresNewFinalCard := false
+		finalDeliveryPolicy, hasFinalDeliveryPolicy := p.(RichCardFinalDeliveryPolicy)
+		if hasFinalDeliveryPolicy {
+			requiresNewFinalCard = finalDeliveryPolicy.RequiresNewFinalCard(terminalRenderCtx, replyCtx, workspaceRenderer(fullResponse))
+		}
 		terminalTextDelivered := false
-		if fallback, ok := p.(RichCardTerminalTextFallback); ok {
+		if fallback, ok := p.(RichCardTerminalTextFallback); ok && !requiresNewFinalCard {
 			prepared, required, err := fallback.PrepareRichCardTerminalText(
 				terminalRenderCtx,
 				replyCtx,
@@ -8271,6 +8273,9 @@ func (d *turnDelivery) deliver() {
 		}
 		if !terminalTextDelivered {
 			finalBody := resolveRichCardMarkdown(fullResponse, true)
+			if requiresNewFinalCard {
+				requiresNewFinalCard = finalDeliveryPolicy.RequiresNewFinalCard(terminalRenderCtx, replyCtx, finalBody)
+			}
 			finalCard := buildRichCard(p, richCardSupporter, CardStatusDone, "done", toolSteps, finalBody, false, statusFooter)
 			sendAnswerFallback := func() bool {
 				if abortIfTerminalDeliveryCanceled() {
@@ -8310,7 +8315,11 @@ func (d *turnDelivery) deliver() {
 				}
 				return true
 			}
-			if cardMessageID != nil {
+			if requiresNewFinalCard {
+				if !sendAnswerFallback() {
+					return
+				}
+			} else if cardMessageID != nil {
 				// Re-check after completion bookkeeping. This window is intentionally
 				// tiny, but an explicit recall must still prevent a final card patch
 				// if it races with footer/log bookkeeping.
