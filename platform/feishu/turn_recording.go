@@ -254,10 +254,13 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 }
 
 // turnRecordClientToken is a stable idempotency key so Feishu de-duplicates
-// retried/redelivered writes for the same turn.
+// retried/redelivered writes for the same turn. Feishu requires the
+// client_token query parameter to be UUID-shaped, so the 128-bit hash is
+// rendered as a canonical 8-4-4-4-12 UUID string.
 func turnRecordClientToken(rec core.TurnRecord) string {
 	sum := sha256.Sum256([]byte(rec.MessageID + "\x00" + rec.Answer))
-	return hex.EncodeToString(sum[:16])
+	h := hex.EncodeToString(sum[:16])
+	return fmt.Sprintf("%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
 }
 
 func (p *Platform) configureTurnRecording(opts map[string]any) error {
