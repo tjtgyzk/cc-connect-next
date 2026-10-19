@@ -165,6 +165,14 @@ func TestTurnRecorderWrite_ResolvesWikiAndCreatesRecord(t *testing.T) {
 	if !uuidRe.MatchString(srv.clientTokens[0]) {
 		t.Fatalf("client_token not UUID-shaped: %q", srv.clientTokens[0])
 	}
+	// Feishu requires a proper UUID v4: version nibble must be 4, variant must be 8/9/a/b.
+	ct := srv.clientTokens[0]
+	if ct[14] != '4' {
+		t.Fatalf("client_token version nibble = %q, want '4': %q", ct[14], ct)
+	}
+	if !strings.ContainsRune("89ab", rune(ct[19])) {
+		t.Fatalf("client_token variant nibble = %q, want 8/9/a/b: %q", ct[19], ct)
+	}
 	if srv.clientTokens[0] != srv.clientTokens[1] {
 		t.Fatalf("client_token not stable: %q vs %q", srv.clientTokens[0], srv.clientTokens[1])
 	}
