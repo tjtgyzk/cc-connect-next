@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -56,10 +57,11 @@ func TestParseTurnRecordOptions(t *testing.T) {
 }
 
 type turnRecordServer struct {
-	mu         sync.Mutex
-	wikiCalls  int
-	recordReq  []map[string]any
-	recordPath []string
+	mu           sync.Mutex
+	wikiCalls    int
+	recordReq    []map[string]any
+	recordPath   []string
+	clientTokens []string
 }
 
 func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +83,7 @@ func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.recordReq = append(s.recordReq, body)
 		s.recordPath = append(s.recordPath, r.URL.Path)
+		s.clientTokens = append(s.clientTokens, r.URL.Query().Get("client_token"))
 		s.mu.Unlock()
 		respond(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"record": map[string]any{"record_id": "rec1"}}})
 	default:
@@ -153,9 +156,17 @@ func TestTurnRecorderWrite_ResolvesWikiAndCreatesRecord(t *testing.T) {
 	if fields["问题"] != "how do I do X?" || fields["答案"] != "do Y then Z" {
 		t.Fatalf("content fields wrong: %+v", fields)
 	}
-	// idempotency key present and stable across the two identical writes
-	if body["client_token"] == "" || body["client_token"] != srv.recordReq[1]["client_token"] {
-		t.Fatalf("client_token not stable: %v vs %v", body["client_token"], srv.recordReq[1]["client_token"])
+	// idempotency key is sent as the client_token query parameter, must be a
+	// canonical UUID, and must be stable across the two identical writes.
+	uuidRe := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	if len(srv.clientTokens) != 2 {
+		t.Fatalf("client_token captures = %d, want 2", len(srv.clientTokens))
+	}
+	if !uuidRe.MatchString(srv.clientTokens[0]) {
+		t.Fatalf("client_token not UUID-shaped: %q", srv.clientTokens[0])
+	}
+	if srv.clientTokens[0] != srv.clientTokens[1] {
+		t.Fatalf("client_token not stable: %q vs %q", srv.clientTokens[0], srv.clientTokens[1])
 	}
 }
 
