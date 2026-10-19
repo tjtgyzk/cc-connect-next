@@ -31,6 +31,9 @@ func TestParseTurnRecordOptions(t *testing.T) {
 	if cfg.fields.Time != "时间" || cfg.fields.UserID != "user_id" || cfg.fields.Answer != "答案" {
 		t.Fatalf("default fields wrong: %+v", cfg.fields)
 	}
+	if cfg.fields.Requester != "" || cfg.fields.Trace != "" || cfg.fields.Duration != "" || cfg.fields.ToolCount != "" || cfg.fields.Summary != "" {
+		t.Fatalf("enrichment fields must be opt-in: %+v", cfg.fields)
+	}
 
 	// enabled with overrides
 	cfg, err = parseTurnRecordOptions(map[string]any{
@@ -61,9 +64,11 @@ func TestParseTurnRecordOptions(t *testing.T) {
 type turnRecordServer struct {
 	mu           sync.Mutex
 	wikiCalls    int
+	contactCode  int
 	recordReq    []map[string]any
 	recordPath   []string
 	clientTokens []string
+	userIDTypes  []string
 }
 
 func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +83,13 @@ func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		respond(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"node": map[string]any{"obj_token": "bascnResolved", "obj_type": "bitable"}}})
 	case strings.Contains(r.URL.Path, "/contact/v3/users/"):
+		s.mu.Lock()
+		contactCode := s.contactCode
+		s.mu.Unlock()
+		if contactCode != 0 {
+			respond(map[string]any{"code": contactCode, "msg": "synthetic lookup denied"})
+			return
+		}
 		respond(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"user": map[string]any{"user_id": "u_123", "name": "Alice"}}})
 	case strings.Contains(r.URL.Path, "/bitable/v1/apps/") && strings.HasSuffix(r.URL.Path, "/records"):
 		var body map[string]any
@@ -86,6 +98,7 @@ func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
 		s.recordReq = append(s.recordReq, body)
 		s.recordPath = append(s.recordPath, r.URL.Path)
 		s.clientTokens = append(s.clientTokens, r.URL.Query().Get("client_token"))
+		s.userIDTypes = append(s.userIDTypes, r.URL.Query().Get("user_id_type"))
 		s.mu.Unlock()
 		respond(map[string]any{"code": 0, "msg": "ok", "data": map[string]any{"record": map[string]any{"record_id": "rec1"}}})
 	default:
@@ -93,18 +106,24 @@ func (s *turnRecordServer) handler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func newTurnRecordFixture(t *testing.T) (*Platform, *turnRecordServer) {
+func newTurnRecordFixture(t *testing.T, extraOptions ...map[string]any) (*Platform, *turnRecordServer) {
 	t.Helper()
 	srv := &turnRecordServer{}
 	server := httptest.NewServer(http.HandlerFunc(srv.handler))
 	t.Cleanup(server.Close)
-	raw, err := New(map[string]any{
+	opts := map[string]any{
 		"app_id":              "cli_test",
 		"app_secret":          "test",
 		"domain":              server.URL,
 		"enable_feishu_card":  false,
 		"turn_record_enabled": true,
-	})
+	}
+	for _, extra := range extraOptions {
+		for key, value := range extra {
+			opts[key] = value
+		}
+	}
+	raw, err := New(opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +164,9 @@ func TestTurnRecorderWrite_ResolvesWikiAndCreatesRecord(t *testing.T) {
 	fields, _ := body["fields"].(map[string]any)
 	if fields == nil {
 		t.Fatalf("missing fields: %+v", body)
+	}
+	if len(fields) != 7 {
+		t.Fatalf("legacy configuration must only write its original seven columns: %+v", fields)
 	}
 	if fields["时间"] != "2026-10-19 10:30:00" {
 		t.Fatalf("time field = %v", fields["时间"])
@@ -334,4 +356,127 @@ func TestResolveUserInfo_CancelledLookupPreservesCachedName(t *testing.T) {
 	if userID != "" || name != "Cached name" {
 		t.Fatalf("cancelled lookup lost cached fallback: userID=%q name=%q", userID, name)
 	}
+}
+
+func TestParseTurnRecordOptions_EnrichmentMappings(t *testing.T) {
+	cfg, err := parseTurnRecordOptions(map[string]any{"turn_record_fields": map[string]any{
+		"requester": " 提问人 ", "trace": "Trace", "duration": "耗时（秒）", "tool_count": "工具次数", "summary": "摘要",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.fields.Requester != "提问人" || cfg.fields.Trace != "Trace" || cfg.fields.Duration != "耗时（秒）" || cfg.fields.ToolCount != "工具次数" || cfg.fields.Summary != "摘要" {
+		t.Fatalf("enrichment mappings not applied: %+v", cfg.fields)
+	}
+	for _, fields := range []map[string]any{
+		{"requester": true},
+		{"duration": 2},
+		{"requester": "昵称"},
+		{"trace": "Trace", "summary": "Trace"},
+	} {
+		if _, err := parseTurnRecordOptions(map[string]any{"turn_record_fields": fields}); err == nil {
+			t.Fatalf("invalid mapping accepted: %+v", fields)
+		}
+	}
+	cfg, err = parseTurnRecordOptions(map[string]any{"turn_record_fields": map[string]any{"requester": " ", "trace": ""}})
+	if err != nil || cfg.fields.Requester != "" || cfg.fields.Trace != "" {
+		t.Fatalf("empty enrichment mappings must stay disabled: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestTurnRecorderWrite_EnrichmentUsesNativeTypesWithoutContactPermission(t *testing.T) {
+	p, srv := newTurnRecordFixture(t, map[string]any{"turn_record_fields": map[string]any{
+		"requester": "提问人", "trace": "Trace", "duration": "耗时（秒）", "tool_count": "工具次数", "summary": "摘要",
+	}})
+	srv.mu.Lock()
+	srv.contactCode = 99991672
+	srv.mu.Unlock()
+	rec := core.TurnRecord{
+		At: time.Now(), UserID: "ou_user", UserName: "ou_user", FeishuUserID: "u_legacy",
+		Question: "Question", Answer: "Answer", MessageID: "om_enriched",
+		TraceURL: "https://trace.example.test/project/demo/traces/trace-123",
+		Duration: 1250 * time.Millisecond, ToolCount: 3, Summary: "Verified short summary",
+	}
+	p.turnRecording.write(p, rec)
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.recordReq) != 1 {
+		t.Fatalf("Contact denial must not prevent archival: records=%d", len(srv.recordReq))
+	}
+	fields := srv.recordReq[0]["fields"].(map[string]any)
+	person, ok := fields["提问人"].([]any)
+	if !ok || len(person) != 1 {
+		t.Fatalf("person field must be an array: %+v", fields["提问人"])
+	}
+	personValue, ok := person[0].(map[string]any)
+	if !ok || len(personValue) != 1 || personValue["id"] != rec.UserID || srv.userIDTypes[0] != "open_id" {
+		t.Fatalf("wrong person ID type/value: person=%+v user_id_type=%v", person, srv.userIDTypes)
+	}
+	if fields["昵称"] != "" || fields["user_id"] != "u_legacy" {
+		t.Fatalf("ID leaked into nickname or legacy user_id changed meaning: %+v", fields)
+	}
+	link, ok := fields["Trace"].(map[string]any)
+	if !ok || len(link) != 2 || link["text"] != "Trace" || link["link"] != rec.TraceURL {
+		t.Fatalf("invalid URL field structure: %+v", fields["Trace"])
+	}
+	if fields["耗时（秒）"] != 1.25 || fields["工具次数"] != float64(3) || fields["摘要"] != rec.Summary {
+		t.Fatalf("number/text fields have wrong values or types: %+v", fields)
+	}
+}
+
+func TestTurnRecorderWrite_EnrichmentOmitsMissingDataAndInvalidPersonIDs(t *testing.T) {
+	for _, userID := range []string{"u_tenant", "on_union", "oc_chat", "ou_", "ou_bad/id", "ou_user\n"} {
+		t.Run(userID, func(t *testing.T) {
+			p, srv := newTurnRecordFixture(t, map[string]any{"turn_record_fields": map[string]any{
+				"requester": "提问人", "trace": "Trace", "duration": "耗时（秒）", "tool_count": "工具次数", "summary": "摘要",
+			}})
+			srv.mu.Lock()
+			srv.contactCode = 99991672
+			srv.mu.Unlock()
+			p.turnRecording.write(p, core.TurnRecord{UserID: userID, At: time.Now(), MessageID: "om_missing", Answer: "answer"})
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			if len(srv.recordReq) != 1 {
+				t.Fatalf("missing metadata should not prevent archival: records=%d", len(srv.recordReq))
+			}
+			fields := srv.recordReq[0]["fields"].(map[string]any)
+			for _, column := range []string{"提问人", "Trace", "耗时（秒）", "摘要"} {
+				if _, ok := fields[column]; ok {
+					t.Fatalf("missing/invalid field %q must be omitted: %+v", column, fields[column])
+				}
+			}
+			if fields["工具次数"] != float64(0) || fields["user_id"] != "" || fields["昵称"] != "" {
+				t.Fatalf("zero tools should be numeric; unresolved identity must stay empty: %+v", fields)
+			}
+		})
+	}
+}
+
+func TestTurnRecordDisplayNameRejectsIdentityFallbacks(t *testing.T) {
+	for _, test := range []struct{ name, want string }{
+		{"ou_user", ""}, {"on_union", ""}, {"u_tenant", ""}, {"  ", ""},
+		{"  Alice  ", "Alice"}, {"ou_ team", "ou_ team"},
+	} {
+		if got := turnRecordDisplayName(test.name, "ou_user", "u_tenant"); got != test.want {
+			t.Fatalf("displayName(%q)=%q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestTurnRecordEnrichmentConfigContract(t *testing.T) {
+	for _, option := range feishuConfigOptions("https://open.feishu.cn") {
+		if option.Key != "turn_record_fields" {
+			continue
+		}
+		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary"} {
+			if !strings.Contains(option.Description, key) || !strings.Contains(option.DescriptionZH, key) || !strings.Contains(option.Example, key+" = ") {
+				t.Fatalf("configuration contract missing %q", key)
+			}
+		}
+		if !strings.Contains(option.Default, "empty") || !strings.Contains(option.Description, "type 11") || !strings.Contains(option.Description, "type 15") || !strings.Contains(option.Description, "seconds") {
+			t.Fatalf("contract must describe opt-in defaults and native types: %+v", option)
+		}
+		return
+	}
+	t.Fatal("turn_record_fields contract missing")
 }

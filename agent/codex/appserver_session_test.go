@@ -49,6 +49,132 @@ func TestAppServerSession_TurnCompletedModelCapacityIsClassified(t *testing.T) {
 	}
 }
 
+func TestAppServerSession_TerminalEventKeepsExactNativeTurnIdentity(t *testing.T) {
+	for _, method := range []string{"turn/completed", "thread/status/changed"} {
+		t.Run(method, func(t *testing.T) {
+			s := &appServerSession{events: make(chan core.Event, 4), currentTurn: "turn-1"}
+			s.threadID.Store("thread-1")
+			params := notificationProbe(t, map[string]any{
+				"threadId": "thread-1",
+				"turn":     map[string]any{"id": "turn-1", "status": "completed"},
+				"status":   map[string]any{"type": "idle"},
+			})
+			s.handleNotification(method, params)
+			event := <-s.events
+			if event.Type != core.EventResult || !event.Done || event.SessionID != "thread-1" || event.TurnID != "turn-1" {
+				t.Fatalf("terminal event lost native identity: %+v", event)
+			}
+			if appServerCurrentTurn(s) != "" {
+				t.Fatal("completed turn remained active")
+			}
+			s.handleNotification(method, params)
+			assertNoAppServerEvent(t, s.events, "duplicate terminal notification")
+		})
+	}
+}
+
+func TestAppServerSession_QueuedSuccessorDoesNotInheritOldTurnIdentity(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 8), currentTurn: "turn-1"}
+	s.threadID.Store("thread-1")
+	completed := func(threadID, turnID string) {
+		s.handleNotification("turn/completed", notificationProbe(t, map[string]any{
+			"threadId": threadID,
+			"turn":     map[string]any{"id": turnID, "status": "completed"},
+		}))
+	}
+	completed("thread-1", "turn-1")
+	first := <-s.events
+	s.handleNotification("turn/started", notificationProbe(t, map[string]any{
+		"threadId": "thread-1", "turn": map[string]any{"id": "turn-2", "status": "inProgress"},
+	}))
+	completed("thread-1", "turn-1")
+	completed("different-thread", "turn-2")
+	assertNoAppServerEvent(t, s.events, "stale or foreign turn completion")
+	if appServerCurrentTurn(s) != "turn-2" {
+		t.Fatal("stale notification cleared the queued successor")
+	}
+	completed("thread-1", "turn-2")
+	second := <-s.events
+	if first.SessionID != "thread-1" || first.TurnID != "turn-1" || second.SessionID != "thread-1" || second.TurnID != "turn-2" {
+		t.Fatalf("native identities crossed turns: first=%+v second=%+v", first, second)
+	}
+	completed("thread-1", "turn-2")
+	assertNoAppServerEvent(t, s.events, "duplicate successor completion")
+}
+
+func TestAppServerSession_FailedTurnDoesNotEmitSuccessfulTraceIdentity(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 4), currentTurn: "failed-turn"}
+	s.threadID.Store("thread-1")
+	s.handleNotification("turn/completed", notificationProbe(t, map[string]any{
+		"threadId": "thread-1", "turn": map[string]any{
+			"id": "failed-turn", "status": "failed", "error": map[string]any{"message": "synthetic failure"},
+		},
+	}))
+	event := <-s.events
+	if event.Type != core.EventError || event.Error == nil || event.Done || event.TurnID != "" {
+		t.Fatalf("failure looked like a completed auditable turn: %+v", event)
+	}
+	s.handleNotification("thread/status/changed", notificationProbe(t, map[string]any{
+		"threadId": "thread-1", "status": map[string]any{"type": "idle"},
+	}))
+	assertNoAppServerEvent(t, s.events, "idle after failed turn")
+}
+
+func TestAppServerSession_UnsuccessfulTerminalStatusWithoutMessageIsNotSuccess(t *testing.T) {
+	for _, status := range []string{"failed", "interrupted"} {
+		for _, errorKind := range []string{"absent", "null", "empty", "whitespace"} {
+			t.Run(status+"/"+errorKind, func(t *testing.T) {
+				s := &appServerSession{events: make(chan core.Event, 4), currentTurn: "turn-1", pendingMsgs: []string{"partial answer"}}
+				s.threadID.Store("thread-1")
+				turn := map[string]any{"id": "turn-1", "status": status}
+				switch errorKind {
+				case "null":
+					turn["error"] = nil
+				case "empty":
+					turn["error"] = map[string]any{"message": ""}
+				case "whitespace":
+					turn["error"] = map[string]any{"message": " \t "}
+				}
+				params := notificationProbe(t, map[string]any{"threadId": "thread-1", "turn": turn})
+				s.handleNotification("turn/completed", params)
+				event := <-s.events
+				if event.Type != core.EventError || event.Error == nil || event.Done || event.TurnID != "" {
+					t.Fatalf("unsuccessful turn was promoted to success: %+v", event)
+				}
+				if status == "interrupted" && !errors.Is(event.Error, context.Canceled) {
+					t.Fatalf("interrupted turn did not retain cancellation: %v", event.Error)
+				}
+				if appServerCurrentTurn(s) != "" || len(s.pendingMsgs) != 0 {
+					t.Fatal("unsuccessful turn retained active state or partial output")
+				}
+				s.handleNotification("turn/completed", params)
+				s.handleNotification("thread/status/changed", notificationProbe(t, map[string]any{
+					"threadId": "thread-1", "status": map[string]any{"type": "idle"},
+				}))
+				assertNoAppServerEvent(t, s.events, "duplicate/idle after unsuccessful turn")
+			})
+		}
+	}
+}
+
+func TestAppServerSession_CompletedAndLegacyMissingStatusStillSucceed(t *testing.T) {
+	for _, status := range []string{"completed", ""} {
+		t.Run(status, func(t *testing.T) {
+			s := &appServerSession{events: make(chan core.Event, 2), currentTurn: "turn-1"}
+			s.threadID.Store("thread-1")
+			turn := map[string]any{"id": "turn-1"}
+			if status != "" {
+				turn["status"] = status
+			}
+			s.handleNotification("turn/completed", notificationProbe(t, map[string]any{"threadId": "thread-1", "turn": turn}))
+			event := <-s.events
+			if event.Type != core.EventResult || !event.Done || event.Error != nil || event.SessionID != "thread-1" || event.TurnID != "turn-1" {
+				t.Fatalf("successful/legacy terminal behavior changed: %+v", event)
+			}
+		})
+	}
+}
+
 func TestAppServerSession_ApplyThreadRuntimeState(t *testing.T) {
 	s := &appServerSession{}
 	effort := "xhigh"

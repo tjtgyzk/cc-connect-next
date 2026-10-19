@@ -188,6 +188,7 @@ const (
 	MsgToolResultFmtNoOutput     MsgKey = "tool_result_fmt_no_output"
 	MsgToolResultFmtOk           MsgKey = "tool_result_fmt_ok"
 	MsgToolResultFmtFailed       MsgKey = "tool_result_fmt_failed"
+	MsgTurnRecordAttachmentTask  MsgKey = "turn_record_attachment_task"
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCancelled          MsgKey = "session_cancelled"
 	MsgNoExecution               MsgKey = "no_execution"
@@ -743,6 +744,13 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgTurnRecordAttachmentTask: {
+		LangEnglish:            "Attachment task",
+		LangChinese:            "附件任务",
+		LangTraditionalChinese: "附件任務",
+		LangJapanese:           "添付ファイルのタスク",
+		LangSpanish:            "Tarea con archivos adjuntos",
+	},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",

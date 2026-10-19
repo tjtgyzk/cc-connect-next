@@ -20,6 +20,7 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 		"reply_to_trigger", "require_mention", "resolve_mentions", "respond_to_at_everyone_and_here",
 		"share_session_in_channel", "thread_isolation",
 		"turn_record_enabled", "turn_record_wiki_token", "turn_record_app_token", "turn_record_table_id", "turn_record_fields",
+		"turn_record_trace_seed_template", "turn_record_trace_url_prefix",
 	})
 	for i := range options {
 		option := &options[i]
@@ -156,11 +157,23 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 			option.Default = defaultTurnRecordTableID
 			option.Description = "Target data table id inside the Bitable."
 			option.DescriptionZH = "多维表格内的目标数据表 id。"
+		case "turn_record_trace_seed_template":
+			option.Type = "string"
+			option.Default = "empty"
+			option.Requires = []string{"turn_record_trace_url_prefix and turn_record_fields.trace for generated links"}
+			option.Description = "Opt-in exporter trace-ID template containing both {session_id} and {turn_id}; other or malformed placeholders are rejected. Replace with exact native terminal IDs, SHA-256 hash the literal seed bytes and use the first 32 lowercase hex characters. The template must match the actual exporter, including literal whitespace, parent-trace and seed behavior. No link is generated if either native ID or either trace option is missing. A generated link does not guarantee trace upload succeeded."
+			option.DescriptionZH = "可选的 exporter trace ID 模板，必须包含 {session_id} 和 {turn_id}，拒绝其他或格式错误的占位符。替换为该轮准确的原生终态 ID，对种子原始字节计算 SHA-256，取前 32 位小写十六进制字符。模板必须与实际 exporter（包括字面空白、父 trace 和 seed 行为）一致；缺少任一原生 ID 或任一 trace 配置时不生成链接。生成链接不代表 trace 已成功上传。"
+		case "turn_record_trace_url_prefix":
+			option.Type = "string"
+			option.Default = "empty"
+			option.Requires = []string{"turn_record_trace_seed_template and turn_record_fields.trace for generated links"}
+			option.Description = "HTTP(S) trace-page URL prefix without user information, query or fragment. A trailing slash and the configured exporter trace ID are appended. Empty disables generated links; an explicitly supplied TurnRecord trace URL takes precedence. The target project must match the exporter, and the URL does not guarantee successful ingestion."
+			option.DescriptionZH = "trace 页面 HTTP(S) URL 前缀，禁止用户信息、查询参数和片段。末尾补一个斜杠并追加配置算法生成的 trace ID；留空不生成链接，TurnRecord 已提供的 trace URL 优先。目标项目须与 exporter 一致，URL 不保证已成功入库。"
 		case "turn_record_fields":
 			option.Type = "table"
-			option.Default = "built-in Chinese column names"
-			option.Description = "Optional mapping from logical fields (time, name, user_id, chat, model, question, answer) to the actual Bitable column names."
-			option.DescriptionZH = "可选的列名映射：逻辑字段（time、name、user_id、chat、model、question、answer）到多维表格实际列名。"
+			option.Default = "built-in seven Chinese column names; enrichment mappings empty"
+			option.Description = "Map time, name, user_id, chat, model, question and answer to existing text columns. Optional requester (person/type 11, same-app open_id), trace (URL/type 15), duration (number/type 2, seconds including user waits but excluding queue time), tool_count (number/type 2) and summary (text/type 1) mappings default to empty and are omitted unless configured. Mapping values must be column-name strings; enrichment columns must be distinct. Create the correctly typed columns before enabling their mappings. Missing trace or summary data is omitted. The legacy user_id remains the tenant user_id; identity IDs are never displayed as nicknames."
+			option.DescriptionZH = "将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。"
 		}
 		if option.DefaultSource == core.ConfigDefaultAdapter && option.Default != "unset" {
 			option.DefaultSource = core.ConfigDefaultBuiltin
@@ -172,6 +185,8 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 	options = core.ConfigureOptionExample(options, "turn_record_enabled", "turn_record_enabled = true")
 	options = core.ConfigureOptionExample(options, "turn_record_wiki_token", `turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"`)
 	options = core.ConfigureOptionExample(options, "turn_record_table_id", `turn_record_table_id = "tblPMqd52KLMKqrh"`)
-	options = core.ConfigureOptionExample(options, "turn_record_fields", `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`)
+	options = core.ConfigureOptionExample(options, "turn_record_trace_seed_template", `turn_record_trace_seed_template = "{session_id}:{turn_id}:trace:1"`)
+	options = core.ConfigureOptionExample(options, "turn_record_trace_url_prefix", `turn_record_trace_url_prefix = "https://langfuse.example.com/project/project-id/traces/"`)
+	options = core.ConfigureOptionExample(options, "turn_record_fields", `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要" }`)
 	return options
 }

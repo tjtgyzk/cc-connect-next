@@ -402,6 +402,7 @@ type Event struct {
 	ToolExitCode             *int           // optional exit code for EventToolResult
 	ToolSuccess              *bool          // optional success flag for EventToolResult
 	SessionID                string         // agent-managed session ID for conversation continuity
+	TurnID                   string         // optional agent-native turn ID, bound to this event
 	RequestID                string         // unique request ID for EventPermissionRequest
 	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
 	Done                     bool

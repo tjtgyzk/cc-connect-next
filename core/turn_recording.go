@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 )
 
@@ -54,17 +55,26 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 		state.isStopped() || state.shouldDiscardTurn(completion.msgID) {
 		return
 	}
+	summary := turnRecordSummary(input.question)
+	if summary == "" {
+		summary = t.engine.i18n.T(MsgTurnRecordAttachmentTask)
+	}
 
 	record := TurnRecord{
-		At:         time.Now(),
-		UserID:     input.userID,
-		UserName:   input.userName,
-		ChatName:   input.chatName,
-		Model:      t.engine.turnModel(state),
-		SessionKey: input.sessionKey,
-		Question:   input.question,
-		Answer:     response.base,
-		MessageID:  completion.msgID,
+		At:             completion.deliveredAt,
+		UserID:         input.userID,
+		UserName:       input.userName,
+		ChatName:       input.chatName,
+		Model:          t.engine.turnModel(state),
+		SessionKey:     input.sessionKey,
+		Question:       input.question,
+		Answer:         response.base,
+		MessageID:      completion.msgID,
+		Summary:        summary,
+		Duration:       completedTurnDuration(completion.turnStart, completion.deliveredAt),
+		ToolCount:      completion.toolCount,
+		AgentSessionID: completion.event.SessionID,
+		AgentTurnID:    completion.event.TurnID,
 	}
 
 	ctx, cancel := context.WithTimeout(completion.terminalDeliveryCtx, 15*time.Second)
@@ -72,6 +82,27 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 	if err := recorder.RecordTurn(ctx, record); err != nil {
 		slog.Warn("turn recording unavailable", "platform", p.Name(), "error", err)
 	}
+}
+
+const turnRecordSummaryLimit = 80
+
+func turnRecordSummary(question string) string {
+	title := strings.Join(strings.Fields(question), " ")
+	if title == "" {
+		return ""
+	}
+	runes := []rune(title)
+	if len(runes) > turnRecordSummaryLimit {
+		return string(runes[:turnRecordSummaryLimit-1]) + "…"
+	}
+	return title
+}
+
+func completedTurnDuration(start, delivered time.Time) time.Duration {
+	if start.IsZero() || delivered.IsZero() || !delivered.After(start) {
+		return 0
+	}
+	return delivered.Sub(start)
 }
 
 // turnModel reports the model in use for the current turn, when the backend

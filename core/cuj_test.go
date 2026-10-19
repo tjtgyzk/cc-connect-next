@@ -2478,6 +2478,11 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	pB := &stubPlatformEngine{n: "platB"}
 	agent := &cujAgent{}
 	e := NewEngine("test", agent, []Platform{pA, pB}, dir+"/sessions.json", LangEnglish)
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Errorf("stop concurrent-platform CUJ engine: %v", err)
+		}
+	})
 
 	// Fire 5 messages on each platform concurrently.
 	var wg sync.WaitGroup
@@ -2512,29 +2517,45 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	for {
 		histA := e.sessions.GetOrCreateActive("platA:userA").GetHistory(0)
 		histB := e.sessions.GetOrCreateActive("platB:userB").GetHistory(0)
-		// Each user sent 5 messages — expect each session to have ≥5 user
-		// entries when fully drained.
-		userA := 0
+		// User history is added before the agent replies. Wait for both sides
+		// of all ten turns so no queued turn can start after the wait below.
+		userA, assistantA := 0, 0
 		for _, h := range histA {
 			if h.Role == "user" {
 				userA++
+			} else if h.Role == "assistant" {
+				assistantA++
 			}
 		}
-		userB := 0
+		userB, assistantB := 0, 0
 		for _, h := range histB {
 			if h.Role == "user" {
 				userB++
+			} else if h.Role == "assistant" {
+				assistantB++
 			}
 		}
-		if userA >= 5 && userB >= 5 {
+		if userA >= 5 && userB >= 5 && assistantA >= 5 && assistantB >= 5 {
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("timed out: userA=%d userB=%d (some messages did not land)", userA, userB)
+			t.Fatalf("timed out: userA=%d assistantA=%d userB=%d assistantB=%d", userA, assistantA, userB, assistantB)
 		default:
 			time.Sleep(20 * time.Millisecond)
 		}
+	}
+	// Assistant history precedes Save. Join the completed event loops before
+	// assertions and TempDir cleanup rather than guessing a disk-flush delay.
+	turnsDone := make(chan struct{})
+	go func() {
+		e.activeTurns.Wait()
+		close(turnsDone)
+	}()
+	select {
+	case <-turnsDone:
+	case <-deadline:
+		t.Fatal("timed out waiting for completed turns to finish saving")
 	}
 
 	// Critical assertion: A's history must NOT contain B's content and

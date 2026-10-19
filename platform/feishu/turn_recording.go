@@ -28,13 +28,18 @@ const (
 
 // turnRecordFields maps logical columns to the actual Bitable column names.
 type turnRecordFields struct {
-	Time     string
-	Name     string
-	UserID   string
-	Chat     string
-	Model    string
-	Question string
-	Answer   string
+	Time      string
+	Name      string
+	UserID    string
+	Chat      string
+	Model     string
+	Question  string
+	Answer    string
+	Requester string
+	Trace     string
+	Duration  string
+	ToolCount string
+	Summary   string
 }
 
 func defaultTurnRecordFields() turnRecordFields {
@@ -50,11 +55,13 @@ func defaultTurnRecordFields() turnRecordFields {
 }
 
 type turnRecordConfig struct {
-	enabled   bool
-	wikiToken string
-	appToken  string
-	tableID   string
-	fields    turnRecordFields
+	enabled           bool
+	wikiToken         string
+	appToken          string
+	tableID           string
+	fields            turnRecordFields
+	traceSeedTemplate string
+	traceURLPrefix    string
 }
 
 // parseTurnRecordOptions validates and builds the turn-recording config.
@@ -80,6 +87,9 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 	if v, ok := opts["turn_record_table_id"].(string); ok && strings.TrimSpace(v) != "" {
 		cfg.tableID = strings.TrimSpace(v)
 	}
+	if err := cfg.parseTraceOptions(opts); err != nil {
+		return nil, err
+	}
 	if raw, ok := opts["turn_record_fields"]; ok {
 		m, ok := raw.(map[string]any)
 		if !ok {
@@ -97,6 +107,32 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 		set(&cfg.fields.Model, "model")
 		set(&cfg.fields.Question, "question")
 		set(&cfg.fields.Answer, "answer")
+		optional := map[string]*string{
+			"requester": &cfg.fields.Requester, "trace": &cfg.fields.Trace,
+			"duration": &cfg.fields.Duration, "tool_count": &cfg.fields.ToolCount,
+			"summary": &cfg.fields.Summary,
+		}
+		used := map[string]bool{}
+		for _, column := range []string{cfg.fields.Time, cfg.fields.Name, cfg.fields.UserID, cfg.fields.Chat, cfg.fields.Model, cfg.fields.Question, cfg.fields.Answer} {
+			used[column] = true
+		}
+		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary"} {
+			if raw, ok := m[key]; ok {
+				column, ok := raw.(string)
+				if !ok {
+					return nil, fmt.Errorf("turn_record_fields.%s must be a string", key)
+				}
+				column = strings.TrimSpace(column)
+				if column == "" {
+					continue
+				}
+				if used[column] {
+					return nil, fmt.Errorf("turn_record_fields.%s must use a distinct column", key)
+				}
+				used[column] = true
+				*optional[key] = column
+			}
+		}
 	}
 	if cfg.enabled {
 		if cfg.appToken == "" && cfg.wikiToken == "" {
@@ -211,8 +247,9 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 	}
 
 	userID, name := p.resolveUserInfo(ctx, rec.UserID)
+	name = turnRecordDisplayName(name, rec.UserID, userID, rec.FeishuUserID)
 	if name == "" {
-		name = rec.UserName
+		name = turnRecordDisplayName(rec.UserName, rec.UserID, userID, rec.FeishuUserID)
 	}
 	if userID == "" {
 		userID = rec.FeishuUserID
@@ -228,10 +265,32 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 		f.Question: rec.Question,
 		f.Answer:   rec.Answer,
 	}
+	if f.Requester != "" && strings.HasPrefix(rec.UserID, "ou_") && len(rec.UserID) > len("ou_") && isValidFeishuLookupID(rec.UserID) {
+		fields[f.Requester] = []map[string]string{{"id": rec.UserID}}
+	}
+	if f.Trace != "" {
+		traceURL := rec.TraceURL
+		if traceURL == "" {
+			traceURL = r.cfg.traceURL(rec.AgentSessionID, rec.AgentTurnID)
+		}
+		if traceURL != "" {
+			fields[f.Trace] = map[string]string{"text": "Trace", "link": traceURL}
+		}
+	}
+	if f.Duration != "" && rec.Duration > 0 {
+		fields[f.Duration] = rec.Duration.Seconds()
+	}
+	if f.ToolCount != "" && rec.ToolCount >= 0 {
+		fields[f.ToolCount] = rec.ToolCount
+	}
+	if f.Summary != "" && rec.Summary != "" {
+		fields[f.Summary] = rec.Summary
+	}
 
 	req := larkbitable.NewCreateAppTableRecordReqBuilder().
 		AppToken(appToken).
 		TableId(r.cfg.tableID).
+		UserIdType("open_id").
 		ClientToken(turnRecordClientToken(rec)).
 		AppTableRecord(larkbitable.NewAppTableRecordBuilder().Fields(fields).Build()).
 		Build()
@@ -251,6 +310,21 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 	if err != nil {
 		slog.Warn(p.tag()+": turn record write failed", "error", err, "message_id", rec.MessageID)
 	}
+}
+
+// Identity lookup failures may leave an ID in UserName. Keep that ID in its
+// identity/person field instead of presenting it as a human display name.
+func turnRecordDisplayName(name string, ids ...string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || (isValidFeishuLookupID(name) && (strings.HasPrefix(name, "ou_") || strings.HasPrefix(name, "on_"))) {
+		return ""
+	}
+	for _, id := range ids {
+		if id != "" && name == strings.TrimSpace(id) {
+			return ""
+		}
+	}
+	return name
 }
 
 // turnRecordClientToken is a stable idempotency key so Feishu de-duplicates

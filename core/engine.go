@@ -6520,6 +6520,7 @@ type turnCompletion struct {
 	legacyPermissionDeliveredPrefix string
 	pendingSend                     *<-chan error
 	turnStart                       time.Time
+	deliveredAt                     time.Time
 	footerDurationCopy              ReplyFooterDurationCopy
 	msgID                           string
 	isSilent                        bool
@@ -6595,6 +6596,9 @@ func (completion *turnCompletion) handle() bool {
 	if !delivery.completed {
 		return false
 	}
+	// Freeze the end of user-visible processing before commit hooks, TTS or
+	// archival can add latency. HITL remains part of the same turn clock.
+	completion.deliveredAt = time.Now()
 	if elapsed := time.Since(replyStart); elapsed >= slowPlatformSend {
 		slog.Warn("slow final reply send", "platform", completion.platform.Name(), "elapsed", elapsed, "response_len", len(response.full))
 	}
@@ -8514,6 +8518,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		}
 		queued := state.pendingMessages[0]
 		state.pendingMessages = state.pendingMessages[1:]
+		turnStart := time.Now()
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
@@ -8568,7 +8573,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		}
 
 		slog.Info("processing queued message", "session", sessionKey)
-		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx)
+		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, turnStart, stopTyping, sendDone, queued.replyCtx)
 	}
 }
 

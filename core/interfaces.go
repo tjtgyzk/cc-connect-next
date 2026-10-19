@@ -35,16 +35,22 @@ type DirectUserSender interface {
 // external audit/archival. It is emitted only after a successful, visible
 // final answer.
 type TurnRecord struct {
-	At           time.Time // turn completion time
-	UserID       string    // platform-scoped sender id (Feishu open_id)
-	UserName     string    // human-readable display name (nickname)
-	FeishuUserID string    // Feishu tenant user_id (optional; may be empty)
-	ChatName     string    // group/chat name (empty for direct messages)
-	Model        string    // model used for this turn (optional)
-	SessionKey   string
-	Question     string // original user question before prompt enrichment; empty for attachment-only input
-	Answer       string // final visible answer
-	MessageID    string // trigger message id
+	At             time.Time // successful terminal delivery time, before post-delivery hooks/archival
+	UserID         string    // platform-scoped sender id (Feishu open_id)
+	UserName       string    // human-readable display name (nickname)
+	FeishuUserID   string    // Feishu tenant user_id (optional; may be empty)
+	ChatName       string    // group/chat name (empty for direct messages)
+	Model          string    // model used for this turn (optional)
+	SessionKey     string
+	Question       string        // original user question before prompt enrichment; empty for attachment-only input
+	Answer         string        // final visible answer
+	MessageID      string        // trigger message id
+	Summary        string        // bounded task title derived from the original question
+	Duration       time.Duration // processing start through terminal delivery, including HITL; zero if unknown
+	ToolCount      int           // tool-use events observed during this native turn
+	AgentSessionID string        // native ID from the terminal event; never inferred from mutable session state
+	AgentTurnID    string        // native turn ID from the terminal event, when provided
+	TraceURL       string        // optional verified trace URL; empty when no exporter mapping is configured
 }
 
 // TurnRecorder is an opt-in capability that persists each delivered turn to an

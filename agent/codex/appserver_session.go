@@ -1511,6 +1511,17 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 				s.failTurn(classifyCodexError(fmt.Errorf("%s", notif.Turn.Error.Message)))
 				return
 			}
+			// An unsuccessful terminal status remains authoritative even when
+			// the server provides no error message. Do not promote buffered
+			// partial output into a successfully delivered/auditable answer.
+			switch notif.Turn.Status {
+			case "failed":
+				s.failTurn(errors.New("codex turn failed"))
+				return
+			case "interrupted":
+				s.failTurn(fmt.Errorf("codex turn interrupted: %w", context.Canceled))
+				return
+			}
 			s.completeTurn()
 		}
 
@@ -1823,11 +1834,16 @@ func (s *appServerSession) completeTurn() {
 		s.stateMu.Unlock()
 		return
 	}
+	// Preserve the accepted native identity before clearing the active turn.
+	// The queued successor may start as soon as this terminal event is consumed;
+	// callers must never recover an audit turn ID from mutable session state.
+	turnID := s.currentTurn
+	threadID := s.CurrentSessionID()
 	s.currentTurn = ""
 	s.stateMu.Unlock()
 	s.rejectPendingApprovals(context.Canceled)
 	s.flushPendingAsText()
-	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
+	s.emit(core.Event{Type: core.EventResult, SessionID: threadID, TurnID: turnID, Done: true})
 }
 
 func (s *appServerSession) failTurn(err error) {

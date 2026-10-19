@@ -4168,17 +4168,17 @@ Opt in to appending one row per delivered turn (time, nickname, user_id, group n
 
 ### `projects.platforms.options.turn_record_fields` — `feishu, lark`
 
-Optional mapping from logical fields (time, name, user_id, chat, model, question, answer) to the actual Bitable column names.
+Map time, name, user_id, chat, model, question and answer to existing text columns. Optional requester (person/type 11, same-app open_id), trace (URL/type 15), duration (number/type 2, seconds including user waits but excluding queue time), tool_count (number/type 2) and summary (text/type 1) mappings default to empty and are omitted unless configured. Mapping values must be column-name strings; enrichment columns must be distinct. Create the correctly typed columns before enabling their mappings. Missing trace or summary data is omitted. The legacy user_id remains the tenant user_id; identity IDs are never displayed as nicknames.
 
 - Source: `toml`
 - Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
 - Scope: `platform` (`feishu, lark`)
 - Type: `table`
 - Requirement: `optional`
-- Default: `built-in Chinese column names`
+- Default: `built-in seven Chinese column names; enrichment mappings empty`
 - Default source: `builtin`
 - Takes effect: `restart`
-- Example: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`
+- Example: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要" }`
 
 ### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
 
@@ -4193,6 +4193,36 @@ Target data table id inside the Bitable.
 - Default source: `builtin`
 - Takes effect: `restart`
 - Example: `turn_record_table_id = "tblPMqd52KLMKqrh"`
+
+### `projects.platforms.options.turn_record_trace_seed_template` — `feishu, lark`
+
+Opt-in exporter trace-ID template containing both {session_id} and {turn_id}; other or malformed placeholders are rejected. Replace with exact native terminal IDs, SHA-256 hash the literal seed bytes and use the first 32 lowercase hex characters. The template must match the actual exporter, including literal whitespace, parent-trace and seed behavior. No link is generated if either native ID or either trace option is missing. A generated link does not guarantee trace upload succeeded.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `empty`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Requires: `turn_record_trace_url_prefix and turn_record_fields.trace for generated links`
+- Example: `turn_record_trace_seed_template = "{session_id}:{turn_id}:trace:1"`
+
+### `projects.platforms.options.turn_record_trace_url_prefix` — `feishu, lark`
+
+HTTP(S) trace-page URL prefix without user information, query or fragment. A trailing slash and the configured exporter trace ID are appended. Empty disables generated links; an explicitly supplied TurnRecord trace URL takes precedence. The target project must match the exporter, and the URL does not guarantee successful ingestion.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `empty`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Requires: `turn_record_trace_seed_template and turn_record_fields.trace for generated links`
+- Example: `turn_record_trace_url_prefix = "https://langfuse.example.com/project/project-id/traces/"`
 
 ### `projects.platforms.options.turn_record_wiki_token` — `feishu, lark`
 

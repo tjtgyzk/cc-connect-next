@@ -4168,17 +4168,17 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 
 ### `projects.platforms.options.turn_record_fields` — `feishu, lark`
 
-可选的列名映射：逻辑字段（time、name、user_id、chat、model、question、answer）到多维表格实际列名。
+将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。
 
 - 来源：`toml`
 - 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
 - 作用域：`platform` (`feishu, lark`)
 - 类型：`table`
 - 要求：`可选`
-- 默认值：`built-in Chinese column names`
+- 默认值：`built-in seven Chinese column names; enrichment mappings empty`
 - 默认值来源：`builtin`
 - 生效方式：`restart`
-- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`
+- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要" }`
 
 ### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
 
@@ -4193,6 +4193,36 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 - 默认值来源：`builtin`
 - 生效方式：`restart`
 - 示例: `turn_record_table_id = "tblPMqd52KLMKqrh"`
+
+### `projects.platforms.options.turn_record_trace_seed_template` — `feishu, lark`
+
+可选的 exporter trace ID 模板，必须包含 {session_id} 和 {turn_id}，拒绝其他或格式错误的占位符。替换为该轮准确的原生终态 ID，对种子原始字节计算 SHA-256，取前 32 位小写十六进制字符。模板必须与实际 exporter（包括字面空白、父 trace 和 seed 行为）一致；缺少任一原生 ID 或任一 trace 配置时不生成链接。生成链接不代表 trace 已成功上传。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`empty`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 依赖: `turn_record_trace_url_prefix and turn_record_fields.trace for generated links`
+- 示例: `turn_record_trace_seed_template = "{session_id}:{turn_id}:trace:1"`
+
+### `projects.platforms.options.turn_record_trace_url_prefix` — `feishu, lark`
+
+trace 页面 HTTP(S) URL 前缀，禁止用户信息、查询参数和片段。末尾补一个斜杠并追加配置算法生成的 trace ID；留空不生成链接，TurnRecord 已提供的 trace URL 优先。目标项目须与 exporter 一致，URL 不保证已成功入库。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`empty`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 依赖: `turn_record_trace_seed_template and turn_record_fields.trace for generated links`
+- 示例: `turn_record_trace_url_prefix = "https://langfuse.example.com/project/project-id/traces/"`
 
 ### `projects.platforms.options.turn_record_wiki_token` — `feishu, lark`
 

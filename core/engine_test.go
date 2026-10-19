@@ -14240,21 +14240,15 @@ func TestCmdDiff_FileSenderPath(t *testing.T) {
 			}
 			return
 		}
-		if len(sent) > 0 {
-			// diff2html not installed → plain text fallback is also acceptable
-			found := false
-			for _, s := range sent {
-				if strings.Contains(s, "```diff") {
-					found = true
-				}
+		// The missing-diff2html notice may arrive before the plain-text diff.
+		// Only the actual output marks completion.
+		for _, s := range sent {
+			if strings.Contains(s, "```diff") {
+				return
 			}
-			if !found {
-				t.Fatalf("expected diff output (file or plain text), got %v", sent)
-			}
-			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for diff response")
+			t.Fatalf("timed out waiting for diff output (file or plain text), got %v", sent)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -832,7 +832,13 @@ func TestClose_ForceKillsProcessGroupAfterGracefulTimeout(t *testing.T) {
 		codexSessionForceKillWait = oldForceKillWait
 	})
 
-	cs, err := newCodexSession(context.Background(), codexSessionParams{cliBin: "codex", workDir: workDir})
+	// Shutdown patches the transcript source before its reader exits. Keep
+	// that lookup inside the fixture instead of scanning the runner's real
+	// Codex history within this process-group timing assertion.
+	cs, err := newCodexSession(context.Background(), codexSessionParams{
+		cliBin: "codex", workDir: workDir,
+		extraEnv: []string{"CODEX_HOME=" + t.TempDir()},
+	})
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
