@@ -2357,7 +2357,7 @@ func (p *Platform) resolveUserName(openID string) string {
 
 // resolveUserInfo resolves an open_id to (user_id, display name) in one Contact
 // API call, caching both. Empty fields fall back to whatever is already cached.
-func (p *Platform) resolveUserInfo(openID string) (userID, name string) {
+func (p *Platform) resolveUserInfo(ctx context.Context, openID string) (userID, name string) {
 	if !isValidFeishuLookupID(openID) {
 		return "", openID
 	}
@@ -2370,7 +2370,7 @@ func (p *Platform) resolveUserInfo(openID string) (userID, name string) {
 	if name != "" && userID != "" {
 		return userID, name
 	}
-	resp, err := p.client.Contact.User.Get(context.Background(),
+	resp, err := p.client.Contact.User.Get(ctx,
 		larkcontact.NewGetUserReqBuilder().
 			UserId(openID).
 			UserIdType("open_id").

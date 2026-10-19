@@ -42,7 +42,7 @@ type TurnRecord struct {
 	ChatName     string    // group/chat name (empty for direct messages)
 	Model        string    // model used for this turn (optional)
 	SessionKey   string
-	Question     string // original user question (before alias/quote injection)
+	Question     string // original user question before prompt enrichment; empty for attachment-only input
 	Answer       string // final visible answer
 	MessageID    string // trigger message id
 }

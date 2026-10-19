@@ -2823,14 +2823,17 @@ func (s *questionJourneySession) Close() error             { s.closeOnce.Do(func
 func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
 	for _, environment := range []string{"prod", "stg"} {
 		t.Run(environment, func(t *testing.T) {
-			p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+			p := &turnRecordCardPlatform{
+				stubCardPlatform:   &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}},
+				turnRecordRecorder: &turnRecordRecorder{enabled: true},
+			}
 			s := &questionJourneySession{events: make(chan Event, 8), answers: make(chan string, 1), done: make(chan struct{})}
 			e := NewEngine("test", &controllableAgent{nextSession: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
 			t.Cleanup(func() { _ = s.Close(); _ = e.Stop() })
 			key := "test:alice"
 			// Action 1: request the query; the user sees a question, no result.
-			e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "alice", Content: "Check the synthetic device", ReplyCtx: "ctx"})
-			card := waitForSentCard(t, p)
+			e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: "original-question", UserID: "alice", UserName: "Alice", Content: "Check the synthetic device", ReplyCtx: "ctx"})
+			card := waitForSentCard(t, p.stubCardPlatform)
 			if !strings.Contains(card.RenderText(), "Which environment?") {
 				t.Fatalf("question card: %s", card.RenderText())
 			}
@@ -2853,6 +2856,9 @@ func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
 			e.ReceiveMessage(p, stale)
 			if ack := <-stale.QuestionResponse; ack.Accepted || ack.Message == "" {
 				t.Fatalf("stale ack=%#v", ack)
+			}
+			if rows := p.snapshot(); len(rows) != 0 {
+				t.Fatalf("waiting question or rejected card recorded as a completed turn: %+v", rows)
 			}
 			// Action 3: a valid choice resumes the original native turn.
 			valid := questionTestMessage(key, "alice", action)
@@ -2886,6 +2892,12 @@ func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
 			if sends != 1 {
 				t.Fatalf("native turns started=%d, want 1", sends)
 			}
+			waitForSteer(t, "native turn recorded and released", func() bool { return !e.sessions.GetOrCreateActive(key).Busy() })
+			rows := p.snapshot()
+			if len(rows) != 1 {
+				t.Fatalf("native continuation/replay created %d audit rows, want 1", len(rows))
+			}
+			assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "Alice", "", "Check the synthetic device", "Continued in "+environment)
 		})
 	}
 }

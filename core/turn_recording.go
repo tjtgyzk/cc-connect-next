@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+// turnRecordInput travels with the trigger message through queueing and steer
+// adoption. Runtime authorization can change independently of presentation
+// ownership, so audit identity must not be read back from active credentials.
+type turnRecordInput struct {
+	userID     string
+	userName   string
+	chatName   string
+	sessionKey string
+	messageID  string
+	question   string
+}
+
+func (msg *Message) turnRecordInputSnapshot() turnRecordInput {
+	if msg.turnRecordInput != nil {
+		return *msg.turnRecordInput
+	}
+	return turnRecordInput{
+		userID: msg.UserID, userName: msg.UserName, chatName: msg.ChatName,
+		sessionKey: msg.SessionKey, messageID: msg.MessageID, question: msg.Content,
+	}
+}
+
 // recordTurn persists a successfully delivered turn through the platform's
 // optional TurnRecorder capability. It is an
 // auxiliary side channel and must never fail, delay, or re-run the user's turn.
@@ -22,26 +44,25 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 	state := t.state
 
 	state.mu.Lock()
-	userID := state.currentUserID
-	userName := state.currentUserName
-	chatName := state.currentChatName
-	sessionKey := state.currentSessionKey
-	question := state.currentUserQuestion
+	input := state.currentTurnRecord
 	state.mu.Unlock()
 
-	if userID == "" || question == "" || completion.msgID == "" ||
+	// An empty question is valid for image/file-only inputs. Require the
+	// matching trigger instead of inferring whether an audit input exists
+	// from its text, and never attach a successor's identity to an old result.
+	if input.userID == "" || completion.msgID == "" || input.messageID != completion.msgID ||
 		state.isStopped() || state.shouldDiscardTurn(completion.msgID) {
 		return
 	}
 
 	record := TurnRecord{
 		At:         time.Now(),
-		UserID:     userID,
-		UserName:   userName,
-		ChatName:   chatName,
+		UserID:     input.userID,
+		UserName:   input.userName,
+		ChatName:   input.chatName,
 		Model:      t.engine.turnModel(state),
-		SessionKey: sessionKey,
-		Question:   question,
+		SessionKey: input.sessionKey,
+		Question:   input.question,
 		Answer:     response.base,
 		MessageID:  completion.msgID,
 	}

@@ -343,6 +343,9 @@ type Message struct {
 	IsQuestionResponse   bool
 	QuestionResponse     chan QuestionResponseResult `json:"-"`
 	questionResponseOnce *sync.Once                  // shared by normalized copies of this message
+	// Immutable engine-owned audit input, captured before prompt enrichment.
+	// It is private so platform JSON cannot inject or expose the snapshot.
+	turnRecordInput *turnRecordInput
 	// UserMessageTimeMs is the platform message creation time in Unix milliseconds
 	// when known (e.g. Feishu im.message.message_received create_time). Used to
 	// drop late redeliveries that reuse a new message_id but an older create_time

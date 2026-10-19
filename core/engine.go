@@ -586,6 +586,7 @@ type workspaceInitFlow struct {
 // sends it after the current turn completes to avoid mid-turn interference.
 type queuedMessage struct {
 	messageID         string
+	turnRecordInput   turnRecordInput
 	platform          Platform
 	replyCtx          any
 	content           string
@@ -612,11 +613,8 @@ type interactiveState struct {
 	currentMessageID    string
 	currentUserID       string
 	currentSessionKey   string
-	// Turn-audit capture for the in-flight turn (guarded by mu): the original
-	// user question and the sender's display/group names, used by TurnRecorder.
-	currentUserQuestion      string
-	currentUserName          string
-	currentChatName          string
+	// Audit input belongs to the adopted presentation, not current credentials.
+	currentTurnRecord        turnRecordInput // guarded by mu
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
@@ -700,6 +698,7 @@ type interactiveState struct {
 // the original trigger message/card to a newer steered message (issue #27).
 type steerHandoff struct {
 	messageID         string
+	turnRecordInput   turnRecordInput
 	platform          Platform
 	replyCtx          any
 	cardHandle        any          // successor card pre-created in "steering" phase; nil when not rich-card mode
@@ -2998,6 +2997,10 @@ func (e *Engine) normalizeIncomingContent(p Platform, msg *Message) (string, boo
 	if isQuestionResponse(msg, content) {
 		return content, true
 	}
+	if msg.turnRecordInput == nil {
+		input := msg.turnRecordInputSnapshot()
+		msg.turnRecordInput = &input
+	}
 	if content == "" && msg.ExtraContent == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
 		return "", false
 	}
@@ -3480,6 +3483,7 @@ func (e *Engine) trySteerBusyMessage(p Platform, msg *Message, interactiveKey st
 		)
 		committed := e.commitSteerPresentation(interactiveKey, steerHandoff{
 			messageID:         msg.MessageID,
+			turnRecordInput:   msg.turnRecordInputSnapshot(),
 			platform:          p,
 			replyCtx:          msg.ReplyCtx,
 			cardHandle:        cardHandle,
@@ -3680,6 +3684,7 @@ func (e *Engine) queueMessageForBusySession(p Platform, msg *Message, interactiv
 	}
 	state.pendingMessages = append(state.pendingMessages, queuedMessage{
 		messageID:         msg.MessageID,
+		turnRecordInput:   msg.turnRecordInputSnapshot(),
 		platform:          p,
 		replyCtx:          msg.ReplyCtx,
 		content:           msg.Content,
@@ -4199,9 +4204,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.platform = p
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
-	state.currentUserQuestion = msg.Content
-	state.currentUserName = msg.UserName
-	state.currentChatName = msg.ChatName
+	state.currentTurnRecord = msg.turnRecordInputSnapshot()
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
 	e.activateAgentTurnCredential(state, msg.UserID, msg.SessionKey)
@@ -5881,6 +5884,7 @@ func (t *turnProcessor) run() {
 			state.platform = h.platform
 			state.replyCtx = h.replyCtx
 			state.currentMessageID = h.messageID
+			state.currentTurnRecord = h.turnRecordInput
 			state.fromVoice = h.fromVoice
 			state.currentUserID = h.userID
 			state.currentTurnUserMessageTimeMs = h.userMessageTimeMs
@@ -6888,6 +6892,7 @@ func (queue *turnQueue) handle() {
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
+		state.currentTurnRecord = queued.turnRecordInput
 		state.fromVoice = queued.fromVoice
 		state.currentUserID = queued.userID
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
@@ -8500,6 +8505,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
+		state.currentTurnRecord = queued.turnRecordInput
 		state.fromVoice = queued.fromVoice
 		state.currentUserID = queued.userID
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
@@ -8608,6 +8614,7 @@ func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
 			sessions.Save()
 			committed := e.commitSteerPresentation(iKey, steerHandoff{
 				messageID:         msg.MessageID,
+				turnRecordInput:   msg.turnRecordInputSnapshot(),
 				platform:          p,
 				replyCtx:          msg.ReplyCtx,
 				cardHandle:        cardHandle,

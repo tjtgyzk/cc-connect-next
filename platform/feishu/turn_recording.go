@@ -210,7 +210,7 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 		return
 	}
 
-	userID, name := p.resolveUserInfo(rec.UserID)
+	userID, name := p.resolveUserInfo(ctx, rec.UserID)
 	if name == "" {
 		name = rec.UserName
 	}

@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	"github.com/timmyagentic/cc-connect-next/core"
 )
 
@@ -228,13 +230,108 @@ func TestTurnRecorder_AvailableThroughInteractiveCardWrapper(t *testing.T) {
 
 func TestResolveUserInfo_CachesUserIDAndName(t *testing.T) {
 	p, _ := newTurnRecordFixture(t)
-	userID, name := p.resolveUserInfo("ou_user")
+	userID, name := p.resolveUserInfo(context.Background(), "ou_user")
 	if userID != "u_123" || name != "Alice" {
 		t.Fatalf("resolveUserInfo = %q,%q", userID, name)
 	}
 	// cached second call
-	userID2, name2 := p.resolveUserInfo("ou_user")
+	userID2, name2 := p.resolveUserInfo(context.Background(), "ou_user")
 	if userID2 != "u_123" || name2 != "Alice" {
 		t.Fatalf("cached resolveUserInfo = %q,%q", userID2, name2)
+	}
+}
+
+type blockedTurnRecordContactTransport struct {
+	base      http.RoundTripper
+	entered   chan struct{}
+	cancelled chan error
+	release   chan struct{}
+	once      sync.Once
+}
+
+func (b *blockedTurnRecordContactTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, "/contact/v3/users/") {
+		b.once.Do(func() { close(b.entered) })
+		select {
+		case <-req.Context().Done():
+			b.cancelled <- req.Context().Err()
+			return nil, req.Context().Err()
+		case <-b.release:
+			return nil, errors.New("contact fixture released")
+		}
+	}
+	return b.base.RoundTrip(req)
+}
+
+func TestTurnRecorder_WriteContactLookupHonorsCancellationAndDeadline(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "recorder stopped", true: "parent deadline"}[deadline], func(t *testing.T) {
+			srv := &turnRecordServer{}
+			server := httptest.NewServer(http.HandlerFunc(srv.handler))
+			transport := &blockedTurnRecordContactTransport{base: server.Client().Transport,
+				entered: make(chan struct{}), cancelled: make(chan error, 1), release: make(chan struct{})}
+			p := &Platform{platformName: "feishu", client: lark.NewClient("cli_contact_"+t.Name(), "test",
+				lark.WithOpenBaseUrl(server.URL), lark.WithHttpClient(&http.Client{Transport: transport}))}
+			ctx, cancel := context.WithCancel(context.Background())
+			if deadline {
+				cancel()
+				ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
+			}
+			r := &turnRecorder{cfg: &turnRecordConfig{enabled: true, appToken: "bascnTest", tableID: "tblTest", fields: defaultTurnRecordFields()}, ctx: ctx, cancel: cancel}
+			done := make(chan struct{})
+			defer func() {
+				r.stop()
+				close(transport.release)
+				select {
+				case <-done:
+				case <-time.After(3 * time.Second):
+					t.Error("write did not stop after fixture release")
+				}
+				server.Close()
+			}()
+			go func() {
+				defer close(done)
+				r.write(p, core.TurnRecord{UserID: "ou_test", MessageID: "om_test", Question: "question", Answer: "answer", At: time.Now()})
+			}()
+			select {
+			case <-transport.entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("contact lookup did not start")
+			}
+			wantErr := context.DeadlineExceeded
+			if !deadline {
+				r.stop()
+				wantErr = context.Canceled
+			}
+			select {
+			case err := <-transport.cancelled:
+				if !errors.Is(err, wantErr) {
+					t.Fatalf("lookup context error = %v, want %v", err, wantErr)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("contact lookup ignored recorder cancellation/deadline")
+			}
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("write did not return after contact cancellation")
+			}
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			if len(srv.recordReq) != 0 {
+				t.Fatal("record sent after write context ended")
+			}
+		})
+	}
+}
+
+func TestResolveUserInfo_CancelledLookupPreservesCachedName(t *testing.T) {
+	p, _ := newTurnRecordFixture(t)
+	p.userNameCache.Store("ou_user", "Cached name")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	userID, name := p.resolveUserInfo(ctx, "ou_user")
+	if userID != "" || name != "Cached name" {
+		t.Fatalf("cancelled lookup lost cached fallback: userID=%q name=%q", userID, name)
 	}
 }
