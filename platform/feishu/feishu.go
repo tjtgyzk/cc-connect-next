@@ -367,7 +367,9 @@ type Platform struct {
 	peerBots             map[string]string // app_id -> friendly alias, for quoted-reply attribution
 	mentionMap           map[string]string // friendly bot name -> open_id, for outbound native @ notifications
 	userNameCache        sync.Map          // open_id -> display name
+	userIDCache          sync.Map          // open_id -> Feishu tenant user_id
 	chatNameCache        sync.Map          // chat_id -> chat name
+	turnRecording        *turnRecorder     // nil unless turn recording is enabled
 	resourceDownloadHTTP *http.Client
 	resourceChunkSize    int64
 	resourceMaxBytes     int64
@@ -674,6 +676,9 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		imageBatchWindow:           imageBatchWindow,
 	}
 	if err := base.configureCompletionNotifications(opts); err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	if err := base.configureTurnRecording(opts); err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
 	if !useInteractiveCard {
@@ -2433,6 +2438,46 @@ func (p *Platform) resolveUserName(openID string) string {
 	name := *resp.Data.User.Name
 	p.userNameCache.Store(openID, name)
 	return name
+}
+
+// resolveUserInfo resolves an open_id to (user_id, display name) in one Contact
+// API call, caching both. Empty fields fall back to whatever is already cached.
+func (p *Platform) resolveUserInfo(openID string) (userID, name string) {
+	if !isValidFeishuLookupID(openID) {
+		return "", openID
+	}
+	if cached, ok := p.userNameCache.Load(openID); ok {
+		name, _ = cached.(string)
+	}
+	if cached, ok := p.userIDCache.Load(openID); ok {
+		userID, _ = cached.(string)
+	}
+	if name != "" && userID != "" {
+		return userID, name
+	}
+	resp, err := p.client.Contact.User.Get(context.Background(),
+		larkcontact.NewGetUserReqBuilder().
+			UserId(openID).
+			UserIdType("open_id").
+			Build())
+	if err != nil {
+		slog.Debug(p.tag()+": resolve user info failed", "open_id", openID, "error", err)
+		return userID, name
+	}
+	if !resp.Success() || resp.Data == nil || resp.Data.User == nil {
+		slog.Debug(p.tag()+": resolve user info: no data", "open_id", openID, "code", resp.Code)
+		return userID, name
+	}
+	user := resp.Data.User
+	if user.Name != nil && *user.Name != "" {
+		name = *user.Name
+		p.userNameCache.Store(openID, name)
+	}
+	if user.UserId != nil && *user.UserId != "" {
+		userID = *user.UserId
+		p.userIDCache.Store(openID, userID)
+	}
+	return userID, name
 }
 
 func userIDFromEvent(id *larkim.UserId) string {
@@ -6100,6 +6145,7 @@ func (p *Platform) updateCardEntity(ctx context.Context, h *feishuPreviewHandle,
 
 func (p *Platform) Stop() error {
 	p.stopCompletionNotifications()
+	p.stopTurnRecording()
 	p.stopBotIdentityRecovery()
 	if p.isWSPrimary {
 		p.markConnectionUnavailable(fmt.Errorf("%s stopped", p.tag()))

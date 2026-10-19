@@ -4265,6 +4265,77 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 - 生效方式：`restart`
 - 示例: `token_endpoint = "https://open-im.api.weibo.com/open/auth/ws_token"`
 
+### `projects.platforms.options.turn_record_app_token` — `feishu, lark`
+
+目标多维表格的 base app_token（非 wiki 托管时使用）；设置后跳过 wiki 解析。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`empty`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 示例: `turn_record_app_token = "empty"`
+
+### `projects.platforms.options.turn_record_enabled` — `feishu, lark`
+
+开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）。记录为尽力而为，绝不阻塞或影响用户回合。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`boolean`
+- 要求：`可选`
+- 默认值：`false`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 依赖: `turn_record_app_token or turn_record_wiki_token, and turn_record_table_id`
+- 示例: `turn_record_enabled = true`
+
+### `projects.platforms.options.turn_record_fields` — `feishu, lark`
+
+可选的列名映射：逻辑字段（time、name、user_id、chat、model、question、answer）到多维表格实际列名。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`table`
+- 要求：`可选`
+- 默认值：`built-in Chinese column names`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`
+
+### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
+
+多维表格内的目标数据表 id。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`tblPMqd52KLMKqrh`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 示例: `turn_record_table_id = "tblPMqd52KLMKqrh"`
+
+### `projects.platforms.options.turn_record_wiki_token` — `feishu, lark`
+
+目标多维表格的 wiki 节点 token，运行时解析为 base app_token 并缓存；设置 turn_record_app_token 时忽略。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`F9ETwBtfRilKbfkMc03cEnvJn2f`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 示例: `turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"`
+
 ### `projects.platforms.options.unread_reminder` — `feishu, lark`
 
 completion_notify 的废弃兼容别名，仅在新选项未设置时生效。现改为立即私聊完成通知，不再查询已读或等待。

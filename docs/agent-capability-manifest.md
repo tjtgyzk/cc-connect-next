@@ -146,6 +146,8 @@ The exhaustive generated configuration reference remains available at [configura
 
 Automatic platform actions can also carry `permission`, `read_only`, and `side_effects`. For example, `completion_notification` reports disabled or conditional availability without exposing configured recipient IDs; its [configuration and delivery contract](completion-notifications.md) includes durable deduplication receipts and immediate private messages from the bot, with no read-status polling or scheduled reminders.
 
+`turn_recording` follows the same pattern: it reports disabled or conditional availability and, when enabled, asynchronously appends one audit row (time, nickname, user_id, group name, model, question, answer) per delivered turn to a configured Feishu Bitable. It is best-effort and never blocks, delays, or fails the user turn.
+
 ## Image galleries
 
 Pass all selected local images in **one** `cc-connect-next send` invocation by
