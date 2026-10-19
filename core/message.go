@@ -341,8 +341,8 @@ type Message struct {
 	// IsQuestionResponse marks a structured-question callback. Callers provide a
 	// buffered acknowledgement channel before showing an accepted-answer card.
 	IsQuestionResponse   bool
-	QuestionResponse     chan QuestionResponseResult
-	questionResponseOnce *sync.Once // shared by normalized copies of this message
+	QuestionResponse     chan QuestionResponseResult `json:"-"`
+	questionResponseOnce *sync.Once                  // shared by normalized copies of this message
 	// UserMessageTimeMs is the platform message creation time in Unix milliseconds
 	// when known (e.g. Feishu im.message.message_received create_time). Used to
 	// drop late redeliveries that reuse a new message_id but an older create_time
@@ -411,7 +411,7 @@ type Event struct {
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
 	// PermissionDone closes when the agent no longer accepts this request.
 	// It lets a waiting UI release pending state on cancellation/disconnect.
-	PermissionDone <-chan struct{}
+	PermissionDone <-chan struct{} `json:"-"`
 }
 
 // HistoryEntry is one turn in a conversation.
