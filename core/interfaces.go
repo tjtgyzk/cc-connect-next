@@ -50,6 +50,30 @@ type TurnCompletionNotifier interface {
 	CompletionNotificationsEnabled() bool
 }
 
+// TurnRecord is one successfully delivered conversation turn, captured for
+// external audit/archival. It is emitted only after a successful, visible
+// final answer, mirroring TurnCompletionNotice.
+type TurnRecord struct {
+	At           time.Time // turn completion time
+	UserID       string    // platform-scoped sender id (Feishu open_id)
+	UserName     string    // human-readable display name (nickname)
+	FeishuUserID string    // Feishu tenant user_id (optional; may be empty)
+	ChatName     string    // group/chat name (empty for direct messages)
+	Model        string    // model used for this turn (optional)
+	SessionKey   string
+	Question     string // original user question (before alias/quote injection)
+	Answer       string // final visible answer
+	MessageID    string // trigger message id
+}
+
+// TurnRecorder is an opt-in capability that persists each delivered turn to an
+// external store (e.g. a Feishu Bitable). Like TurnCompletionNotifier it is an
+// auxiliary side channel: recording failure must never fail or delay a turn.
+type TurnRecorder interface {
+	TurnRecordingEnabled() bool
+	RecordTurn(ctx context.Context, rec TurnRecord) error
+}
+
 // DirectUserCardSender optionally preserves interactive-card actions on a
 // private user target. Engines always fall back to DirectUserSender text when
 // the card path is unavailable or fails.

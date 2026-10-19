@@ -20,6 +20,7 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 		"image_batch_window_ms", "mention_map", "peer_bots", "port", "progress_style", "reaction_emoji",
 		"reply_to_trigger", "require_mention", "resolve_mentions", "respond_to_at_everyone_and_here",
 		"share_session_in_channel", "thread_isolation", "completion_notify", "completion_notify_users", "unread_reminder", "unread_reminder_users", "unread_reminder_delay_mins",
+		"turn_record_enabled", "turn_record_wiki_token", "turn_record_app_token", "turn_record_table_id", "turn_record_fields",
 	})
 	for i := range options {
 		option := &options[i]
@@ -199,6 +200,33 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 			option.Example = `thread_isolation = "topics_only"`
 			option.Keywords = []string{"topic isolation", "multiple topics", "话题隔离", "话题独立", "多个话题"}
 			option.PresetValues = []core.ConfigPresetValue{{Preset: "starter/recommended-feishu", Value: "topics_only", Description: "Isolate real topics without promoting ordinary group messages.", DescriptionZH: "隔离真实话题，不把普通群消息提升为话题。"}}
+		case "turn_record_enabled":
+			option.Type = "boolean"
+			option.Default = "false"
+			option.Requires = []string{"turn_record_app_token or turn_record_wiki_token, and turn_record_table_id"}
+			option.Description = "Opt in to appending one row per delivered turn (time, nickname, user_id, group name, model, question, answer) to a Feishu Bitable. Recording is best-effort and never blocks or fails the user turn."
+			option.DescriptionZH = "开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）。记录为尽力而为，绝不阻塞或影响用户回合。"
+			option.Keywords = []string{"turn record", "bitable", "audit log", "回合记录", "多维表格", "审计"}
+		case "turn_record_wiki_token":
+			option.Type = "string"
+			option.Default = defaultTurnRecordWikiToken
+			option.Description = "Wiki node token of the target Bitable. Resolved to the base app_token at runtime and cached. Ignored when turn_record_app_token is set."
+			option.DescriptionZH = "目标多维表格的 wiki 节点 token，运行时解析为 base app_token 并缓存；设置 turn_record_app_token 时忽略。"
+		case "turn_record_app_token":
+			option.Type = "string"
+			option.Default = "empty"
+			option.Description = "Base app_token of the target Bitable when it is not wiki-hosted. When set, wiki resolution is skipped."
+			option.DescriptionZH = "目标多维表格的 base app_token（非 wiki 托管时使用）；设置后跳过 wiki 解析。"
+		case "turn_record_table_id":
+			option.Type = "string"
+			option.Default = defaultTurnRecordTableID
+			option.Description = "Target data table id inside the Bitable."
+			option.DescriptionZH = "多维表格内的目标数据表 id。"
+		case "turn_record_fields":
+			option.Type = "table"
+			option.Default = "built-in Chinese column names"
+			option.Description = "Optional mapping from logical fields (time, name, user_id, chat, model, question, answer) to the actual Bitable column names."
+			option.DescriptionZH = "可选的列名映射：逻辑字段（time、name、user_id、chat、model、question、answer）到多维表格实际列名。"
 		}
 		if option.DefaultSource == core.ConfigDefaultAdapter && option.Default != "unset" {
 			option.DefaultSource = core.ConfigDefaultBuiltin
@@ -216,5 +244,9 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 	options = core.ConfigureOptionExample(options, "group_context_max_messages", "group_context_max_messages = 20")
 	options = core.ConfigureOptionExample(options, "group_context_window_minutes", "group_context_window_minutes = 30")
 	options = core.ConfigureOptionExample(options, "group_context_max_chars", "group_context_max_chars = 8000")
+	options = core.ConfigureOptionExample(options, "turn_record_enabled", "turn_record_enabled = true")
+	options = core.ConfigureOptionExample(options, "turn_record_wiki_token", `turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"`)
+	options = core.ConfigureOptionExample(options, "turn_record_table_id", `turn_record_table_id = "tblPMqd52KLMKqrh"`)
+	options = core.ConfigureOptionExample(options, "turn_record_fields", `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`)
 	return options
 }

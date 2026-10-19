@@ -615,16 +615,21 @@ type interactiveState struct {
 	feedbackTurn *feedbackTurn // guarded by mu; diagnostic state has its own mutex
 	// capabilityBriefSent flips after the capability brief has been
 	// prepended to a prompt for this state (guarded by mu).
-	capabilityBriefSent      bool
-	agentSession             AgentSession
-	startError               error    // immutable outcome when backend startup failed
-	contextMessageIDs        []string // candidate background IDs; committed only on successful completion
-	platform                 Platform
-	replyCtx                 any
-	currentMessageID         string
-	currentUserID            string
-	currentReplyUserID       string // owner of the visible trigger; legacy /ps can change authorization without moving the reply
-	currentSessionKey        string
+	capabilityBriefSent bool
+	agentSession        AgentSession
+	startError          error    // immutable outcome when backend startup failed
+	contextMessageIDs   []string // candidate background IDs; committed only on successful completion
+	platform            Platform
+	replyCtx            any
+	currentMessageID    string
+	currentUserID       string
+	currentReplyUserID  string // owner of the visible trigger; legacy /ps can change authorization without moving the reply
+	currentSessionKey   string
+	// Turn-audit capture for the in-flight turn (guarded by mu): the original
+	// user question and the sender's display/group names, used by TurnRecorder.
+	currentUserQuestion      string
+	currentUserName          string
+	currentChatName          string
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
@@ -4254,6 +4259,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
 	state.currentReplyUserID = msg.UserID
+	state.currentUserQuestion = feedbackUserContent(msg)
+	state.currentUserName = msg.UserName
+	state.currentChatName = msg.ChatName
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
 	e.activateAgentTurnCredential(state, msg.UserID, msg.SessionKey)
@@ -6717,6 +6725,7 @@ func (completion *turnCompletion) handle() bool {
 	}
 	completion.commit(response, triggerAutoCompress, tokenEstimate)
 	completion.notifyCompletion(response)
+	completion.recordTurn(response)
 	return !completion.runAutoCompress(triggerAutoCompress)
 }
 

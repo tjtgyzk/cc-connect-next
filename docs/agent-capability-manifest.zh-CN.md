@@ -125,6 +125,8 @@ Manifest 只返回能力元数据，明确不返回：
 
 平台自动动作也可带有 `permission`、`read_only` 和 `side_effects`。例如 `completion_notification` 会明确报告未启用或条件可用，不暴露配置中的收件人 ID；其[配置与投递契约](completion-notifications.md)包含持久去重记录和机器人即时私聊消息副作用，不查询已读、不安排延迟提醒。
 
+`turn_recording` 采用同样的模式：报告未启用或条件可用；启用后，每个成功交付的回合异步向配置的飞书多维表格追加一行审计记录（时间、昵称、user_id、群名、模型、问题、答案）。该能力为尽力而为，绝不阻塞、延迟或影响用户回合。
+
 ## 图片图集
 
 批量发送本地图片时，在**同一次** `cc-connect-next send` 调用中重复传入

@@ -1118,6 +1118,15 @@ app_secret = "your-feishu-app-secret"
 # completion_notify_users = ["ou_your_id_in_this_bot_app"] # Explicit app-scoped turn owners; no wildcard.
 # 成功回复后由当前机器人立即私聊发起人一次，附原对话链接；默认关闭。
 # 旧 unread_reminder / unread_reminder_users 为兼容别名；旧 delay_mins 已忽略，请删除。
+# turn_record_enabled = false        # Opt in to appending one row per delivered turn to a Feishu Bitable.
+# turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"  # Wiki node token of the target Bitable (resolved to app_token at runtime).
+# turn_record_app_token = ""        # Or set the base app_token directly when the Bitable is not wiki-hosted.
+# turn_record_table_id = "tblPMqd52KLMKqrh"               # Target data table id.
+# turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }
+#                                   # Optional logical->column mapping.
+# 开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）；
+# 记录为尽力而为，异步写入，绝不阻塞或影响用户回合。需为应用开通 bitable:app / wiki:wiki:readonly 权限，
+# 并将机器人加为目标多维表格的协作者。默认关闭。
 # share_session_in_channel = true   # Feishu/Lark default: share ordinary group sessions; false opts out
 #                                   # 设为 true 时，群聊内所有用户共享同一个 Agent 会话
 # thread_isolation = "topics_only" # runtime default, including omitted old configs; off opts out; legacy true = topic_per_message
