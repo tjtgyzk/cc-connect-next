@@ -1127,6 +1127,13 @@ cc-connect-next daemon logs [-f]
 cc-connect-next daemon uninstall
 ```
 
+`daemon status` reports service state separately from runtime health. The local
+`/healthz` endpoint returns HTTP 200 with `ready: true` when every platform is
+either ready or a healthy inbound listener waiting for clients (`idle`). Bridge
+can therefore be idle while no adapter is connected; delivery still requires an
+active adapter. A starting platform or a real connection failure keeps runtime
+readiness false (HTTP 503), and failures are reported as `unavailable`.
+
 From a normal terminal, `daemon restart` keeps using the installed service
 manager immediately. When an Agent invokes the same command inside an active
 chat turn, cc-connect-next instead schedules its graceful restart after the

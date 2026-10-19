@@ -101,8 +101,8 @@ type projectPlatformReadiness struct {
 	engine  platformStatusReporter
 }
 
-// unusablePlatformWarning names the platforms that cannot deliver a message,
-// or "" when every platform is usable.
+// unusablePlatformWarning names platforms that failed or have not connected.
+// A healthy inbound listener waiting for clients does not require intervention.
 func unusablePlatformWarning(sources []projectPlatformReadiness) string {
 	var broken []string
 	for _, s := range sources {
@@ -110,7 +110,7 @@ func unusablePlatformWarning(sources []projectPlatformReadiness) string {
 			continue
 		}
 		for _, status := range s.engine.PlatformStatuses() {
-			if status.Usable() {
+			if status.Healthy() {
 				continue
 			}
 			reason := "never connected"
@@ -127,7 +127,7 @@ func unusablePlatformWarning(sources []projectPlatformReadiness) string {
 		strings.Join(broken, ", "))
 }
 
-// watchPlatformReadiness reports platforms that never became usable, once,
+// watchPlatformReadiness reports platforms that never became healthy, once,
 // after the grace period. The returned timer lets callers stop the check.
 func watchPlatformReadiness(sources []projectPlatformReadiness, grace time.Duration) *time.Timer {
 	return time.AfterFunc(grace, func() {

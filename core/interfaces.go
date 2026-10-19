@@ -498,10 +498,17 @@ type PlatformLifecycleHandler interface {
 // A long connection is established in the background, so Start succeeding says
 // nothing about whether the platform can deliver a message. Implementations
 // return the error that ended the last connection attempt, or nil while the
-// connection is usable.
+// connection is usable. An inbound transport that is accepting connections
+// but has no clients may wrap ErrPlatformIdle; actual transport failures must
+// return a different error.
 type PlatformHealth interface {
 	ConnectionError() error
 }
+
+// ErrPlatformIdle means an inbound transport is waiting for clients, rather
+// than failing. It is healthy for readiness checks but cannot deliver messages
+// until a client connects.
+var ErrPlatformIdle = errors.New("waiting for client connections")
 
 // AsyncRecoverablePlatform is an optional interface for platforms that start
 // a background recovery loop and later report readiness or unavailability.

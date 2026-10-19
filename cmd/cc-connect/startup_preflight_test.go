@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,6 +152,43 @@ func TestUnusablePlatformWarning_SilentWhenEverythingIsUsable(t *testing.T) {
 	})
 	if warning != "" {
 		t.Fatalf("warning emitted for a healthy startup: %s", warning)
+	}
+}
+
+func TestUnusablePlatformWarning_DoesNotReportHealthyIdleListeners(t *testing.T) {
+	for _, idleErr := range []error{core.ErrPlatformIdle, fmt.Errorf("adapter listener: %w", core.ErrPlatformIdle)} {
+		warning := unusablePlatformWarning([]projectPlatformReadiness{
+			{project: "active", engine: stubStatuses{{Name: "feishu", Ready: true}}},
+			{project: "optional", engine: stubStatuses{{Name: "bridge", Ready: true, Err: idleErr}}},
+		})
+		if warning != "" {
+			t.Fatalf("healthy idle transport produced a startup warning: %s", warning)
+		}
+	}
+}
+
+func TestUnusablePlatformWarning_IdleDoesNotHideRealFailures(t *testing.T) {
+	warning := unusablePlatformWarning([]projectPlatformReadiness{
+		{project: "optional", engine: stubStatuses{{Name: "bridge", Ready: true, Err: core.ErrPlatformIdle}}},
+		{project: "broken", engine: stubStatuses{{Name: "feishu", Ready: true, Err: errors.New("connection refused")}}},
+		{project: "starting", engine: stubStatuses{{Name: "telegram"}}},
+	})
+	for _, want := range []string{"broken/feishu (connection refused)", "starting/telegram (never connected)"} {
+		if !strings.Contains(warning, want) {
+			t.Fatalf("warning missing %q: %s", want, warning)
+		}
+	}
+	if strings.Contains(warning, "optional/bridge") {
+		t.Fatalf("idle listener included with actual failures: %s", warning)
+	}
+}
+
+func TestUnusablePlatformWarning_DoesNotInferIdleFromErrorText(t *testing.T) {
+	warning := unusablePlatformWarning([]projectPlatformReadiness{{
+		project: "broken", engine: stubStatuses{{Name: "adapter", Ready: true, Err: errors.New(core.ErrPlatformIdle.Error())}},
+	}})
+	if !strings.Contains(warning, "broken/adapter") {
+		t.Fatalf("non-sentinel failure was incorrectly classified as idle: %s", warning)
 	}
 }
 

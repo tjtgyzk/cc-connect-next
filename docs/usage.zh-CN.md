@@ -1020,6 +1020,12 @@ cc-connect-next daemon logs [-f]
 cc-connect-next daemon uninstall
 ```
 
+`daemon status` 分别显示服务状态与运行时健康状态。当所有平台已就绪，或处于正常
+监听、等待客户端连接的 `idle` 状态时，本地 `/healthz` 返回 HTTP 200 和
+`ready: true`。因此 Bridge 没有适配器连接时可以正常 idle；实际消息投递仍要求
+适配器在线。平台尚在启动或发生真实连接故障时，运行时就绪状态为 false
+（HTTP 503）；故障平台显示为 `unavailable`。
+
 在普通终端中，`daemon restart` 仍会立即使用已安装的服务管理器。若 Agent
 在活动聊天回合内调用同一命令，cc-connect-next 会改为登记优雅重启：等待当前回答、
 终态卡片、Agent writer 以及已接收的排队消息全部完成后再重启。活动消息用户必须通过

@@ -15,12 +15,21 @@ import (
 	"github.com/timmyagentic/cc-connect-next/core"
 )
 
-func TestReadRuntimeHealthDecodesReadyAndUnavailableResponses(t *testing.T) {
+func TestReadRuntimeHealthDecodesReadyUnavailableAndIdleResponses(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket fixture")
 	}
-	for _, ready := range []bool{false, true} {
-		t.Run(map[bool]string{false: "starting", true: "ready"}[ready], func(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		health core.RuntimeHealth
+	}{
+		{name: "starting", health: core.RuntimeHealth{}},
+		{name: "ready", health: core.RuntimeHealth{Ready: true}},
+		{name: "idle", health: core.RuntimeHealth{Ready: true, Projects: []core.RuntimeProjectHealth{{
+			Name: "alpha", Ready: true, Platforms: []core.RuntimePlatformHealth{{Name: "bridge", State: core.RuntimePlatformIdle, Reason: "waiting for adapter connections"}},
+		}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir, err := os.MkdirTemp("/tmp", "ccn-health-")
 			if err != nil {
 				t.Fatal(err)
@@ -32,10 +41,10 @@ func TestReadRuntimeHealthDecodesReadyAndUnavailableResponses(t *testing.T) {
 				t.Fatal(err)
 			}
 			server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				if !ready {
+				if !tc.health.Ready {
 					w.WriteHeader(http.StatusServiceUnavailable)
 				}
-				_ = json.NewEncoder(w).Encode(core.RuntimeHealth{Ready: ready})
+				_ = json.NewEncoder(w).Encode(tc.health)
 			})}
 			go func() { _ = server.Serve(listener) }()
 			t.Cleanup(func() { _ = server.Close() })
@@ -43,8 +52,40 @@ func TestReadRuntimeHealthDecodesReadyAndUnavailableResponses(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			health, err := readRuntimeHealth(ctx, socketPath)
-			if err != nil || health.Ready != ready {
+			if err != nil || health.Ready != tc.health.Ready {
 				t.Fatalf("health = %+v err=%v", health, err)
+			}
+			if tc.name == "idle" {
+				state, lines := summarizeRuntimeHealth(health)
+				if state != "Ready" || len(lines) != 1 || lines[0] != "alpha/bridge: idle (waiting for adapter connections)" {
+					t.Fatalf("idle HTTP health lost its readiness or explanation: %q / %v", state, lines)
+				}
+			}
+		})
+	}
+}
+
+func TestSummarizeRuntimeHealth_IdleDoesNotMaskOtherPlatformStates(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ready      bool
+		otherState core.RuntimePlatformState
+		wantState  string
+	}{
+		{name: "ready and idle", ready: true, otherState: core.RuntimePlatformReady, wantState: "Ready"},
+		{name: "starting and idle", otherState: core.RuntimePlatformStarting, wantState: "Starting"},
+		{name: "unavailable and idle", otherState: core.RuntimePlatformUnavailable, wantState: "Unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			health := core.RuntimeHealth{Ready: tc.ready, Projects: []core.RuntimeProjectHealth{{
+				Name: "alpha", Platforms: []core.RuntimePlatformHealth{
+					{Name: "feishu", State: tc.otherState},
+					{Name: "bridge", State: core.RuntimePlatformIdle},
+				},
+			}}}
+			state, lines := summarizeRuntimeHealth(health)
+			if state != tc.wantState || len(lines) != 2 || lines[0] != "alpha/bridge: idle" || lines[1] != "alpha/feishu: "+string(tc.otherState) {
+				t.Fatalf("summary = %q / %v, want %q and per-platform states", state, lines, tc.wantState)
 			}
 		})
 	}

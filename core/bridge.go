@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,9 +33,10 @@ type BridgeServer struct {
 	insecure    bool // allow running without token (local dev only)
 	server      *http.Server
 
-	mu       sync.RWMutex
-	adapters map[string]*bridgeAdapter // platform name → adapter
-	dedup    MessageDedup              // accepted inbound messages; survives adapter replacement
+	mu        sync.RWMutex
+	adapters  map[string]*bridgeAdapter // platform name → adapter
+	serverErr error                     // listener/Serve failures outrank idle adapter state
+	dedup     MessageDedup              // accepted inbound messages; survives adapter replacement
 
 	// lifecycleMu serializes adapter availability transitions with engine
 	// registration. The adapter and engine maps keep their own locks because
@@ -50,7 +52,7 @@ type bridgeEngineRef struct {
 	platform *BridgePlatform
 }
 
-var errBridgeNoAdapters = errors.New("no Bridge adapters connected")
+var errBridgeNoAdapters = fmt.Errorf("no Bridge adapters connected: %w", ErrPlatformIdle)
 
 type bridgeAdapter struct {
 	platform     string
@@ -269,11 +271,28 @@ func (bs *BridgeServer) Start() {
 	mux.HandleFunc("/bridge/sessions/", bs.corsHTTP(bs.authHTTP(bs.handleSessionRoutes)))
 
 	addr := fmt.Sprintf(":%d", bs.port)
-	bs.server = &http.Server{Addr: addr, Handler: mux}
+	server := &http.Server{Addr: addr, Handler: mux}
+	bs.server = server
+	// Bind before returning so a failed listener cannot look like a healthy
+	// server merely waiting for its first external adapter.
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		bs.mu.Lock()
+		bs.serverErr = fmt.Errorf("bridge listener: %w", err)
+		bs.mu.Unlock()
+		slog.Error("bridge: server error", "error", err)
+		return
+	}
+	bs.mu.Lock()
+	bs.serverErr = nil
+	bs.mu.Unlock()
 
 	go func() {
 		slog.Info("bridge: server started", "addr", addr, "path", bs.path)
-		if err := bs.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			bs.mu.Lock()
+			bs.serverErr = fmt.Errorf("bridge server: %w", err)
+			bs.mu.Unlock()
 			slog.Error("bridge: server error", "error", err)
 		}
 	}()
@@ -435,6 +454,12 @@ func (bp *BridgePlatform) Start(handler MessageHandler) error {
 func (bp *BridgePlatform) Stop() error { return nil }
 
 func (bp *BridgePlatform) ConnectionError() error {
+	bp.server.mu.RLock()
+	serverErr := bp.server.serverErr
+	bp.server.mu.RUnlock()
+	if serverErr != nil {
+		return serverErr
+	}
 	bp.healthMu.RLock()
 	defer bp.healthMu.RUnlock()
 	return bp.connectionErr

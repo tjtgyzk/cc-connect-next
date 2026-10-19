@@ -288,6 +288,14 @@ type PlatformStatus struct {
 // Usable reports whether this platform can currently deliver a message.
 func (s PlatformStatus) Usable() bool { return s.Ready && s.Err == nil }
 
+// Idle reports a healthy inbound transport waiting for clients. It deliberately
+// does not make Usable true or enable delivery capabilities.
+func (s PlatformStatus) Idle() bool { return errors.Is(s.Err, ErrPlatformIdle) }
+
+// Healthy is the readiness policy shared by the health endpoint and startup
+// diagnostics. Outbound connection failures are never treated as idle.
+func (s PlatformStatus) Healthy() bool { return s.Usable() || s.Idle() }
+
 // PlatformStatuses returns the state of every platform of this engine, in
 // configuration order.
 //
@@ -2590,6 +2598,10 @@ func (e *Engine) OnPlatformReady(p Platform) {
 // OnPlatformUnavailable marks an async platform as unavailable.
 func (e *Engine) OnPlatformUnavailable(p Platform, err error) {
 	if !e.markPlatformUnavailable(p) {
+		return
+	}
+	if errors.Is(err, ErrPlatformIdle) {
+		slog.Info("platform idle", "project", e.name, "platform", p.Name(), "reason", err)
 		return
 	}
 	slog.Warn("platform unavailable", "project", e.name, "platform", p.Name(), "error", err)
