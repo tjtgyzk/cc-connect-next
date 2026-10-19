@@ -1,0 +1,21 @@
+platform/feishu/turn_recording.go
+  s_fbb1d411703c30::t_5ff6d51f372152 258-261,264-269
+platform/feishu/turn_recording_test.go
+  s_fbb1d411703c30::t_928ab160e27569 168-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6667db99a7f90f4d2b94aec2411b1acb50574300",
+  "prompts": {},
+  "sessions": {
+    "s_fbb1d411703c30": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a143f5-1dca-7242-9aef-4f2bf79131b4",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "phil.ma <phil.ma@nio.com>"
+    }
+  }
+}
