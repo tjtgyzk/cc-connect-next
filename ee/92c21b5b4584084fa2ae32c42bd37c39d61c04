@@ -1,0 +1,45 @@
+config.example.toml
+  s_fbb1d411703c30::t_deb3fb6fd92aa3 1121-1129
+core/agent_capability_runtime.go
+  s_fbb1d411703c30::t_214a1c5ee78bd3 466-483
+core/engine.go
+  s_fbb1d411703c30::t_75cc9b4658718c 618-632,4262-4264,6728
+core/interfaces.go
+  s_fbb1d411703c30::t_544e8ab35ea2be 53-76
+core/turn_recording.go
+  s_fbb1d411703c30::t_4d27aaf9438055 1-72
+core/turn_recording_test.go
+  s_fbb1d411703c30::t_465c6c0e3715eb 1-111
+docs/agent-capability-manifest.md
+  s_fbb1d411703c30::t_c5fabb2fdcedbf 149-150
+docs/agent-capability-manifest.zh-CN.md
+  s_fbb1d411703c30::t_6d18701dcb505a 128-129
+docs/configuration.md
+  s_fbb1d411703c30::t_07c380fb89d26b 4268-4338
+docs/configuration.zh-CN.md
+  s_fbb1d411703c30::t_e22b4f0cf635fd 4268-4338
+platform/feishu/feishu.go
+  s_fbb1d411703c30::t_5a71258cc37a1b 370,372,681-683,2443-2482,6148
+platform/feishu/option_schema.go
+  s_fbb1d411703c30::t_3aaa5987be3e6a 23,203-229,247-250
+platform/feishu/turn_recording.go
+  s_fbb1d411703c30::t_301c72e3fffb72 1-295
+platform/feishu/turn_recording_test.go
+  s_fbb1d411703c30::t_b0098c74b381c3 1-221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ee92c21b5b4584084fa2ae32c42bd37c39d61c04",
+  "prompts": {},
+  "sessions": {
+    "s_fbb1d411703c30": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a143f5-1dca-7242-9aef-4f2bf79131b4",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "phil.ma <phil.ma@nio.com>"
+    }
+  }
+}
