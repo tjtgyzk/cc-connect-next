@@ -156,14 +156,24 @@ type RichCardMarkdownTransformer interface {
 	TransformRichCardMarkdown(ctx context.Context, replyCtx any, markdown string) string
 }
 
+// RichCardFinalMarkdownPreparer optionally prepares the resolved body of a
+// successful final rich card. It runs after terminal text fallback has been
+// considered, without changing progress frames or conversational history.
+// Platforms can add terminal-only presentation such as a requester mention.
+type RichCardFinalMarkdownPreparer interface {
+	PrepareRichCardFinalMarkdown(ctx context.Context, replyCtx any, markdown string) string
+}
+
 // RichCardFinalDeliveryPolicy lets a platform request a new final card when
 // updating the lifecycle card cannot provide the required notification
 // semantics. The engine preserves the rich payload and reply context, then
 // tracks the replacement before removing the old card so recall stays safe.
 // The engine first checks the workspace-rendered answer before platform
 // transforms. A true result bypasses RichCardTerminalTextFallback and is
-// revalidated against the prepared final body; a false second result retains
-// the existing card instead of sending a new notification.
+// revalidated against the prepared final body. With a final markdown preparer,
+// the policy also checks the prepared body after an initially false result.
+// A false final result retains the existing card instead of sending a new
+// notification.
 type RichCardFinalDeliveryPolicy interface {
 	RequiresNewFinalCard(ctx context.Context, replyCtx any, markdown string) bool
 }

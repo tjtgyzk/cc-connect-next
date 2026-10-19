@@ -9,6 +9,59 @@ import (
 	"github.com/timmyagentic/cc-connect-next/core"
 )
 
+func TestFinalCardMentionNotDependentOnModelPrefix(t *testing.T) {
+	p := &interactivePlatform{Platform: &Platform{}}
+	trusted := replyContext{messageID: "om_question", chatID: "oc_group", replyMentionID: "ou_sender"}
+	answer := "已完成查询。\n\n|字段|值|\n|---|---|\n|测试|通过|"
+	prepared := p.PrepareRichCardFinalMarkdown(context.Background(), trusted, answer)
+	want := "<at id=ou_sender></at>\n\n" + answer
+	if prepared != want || !p.RequiresNewFinalCard(context.Background(), trusted, prepared) {
+		t.Fatalf("model omitted mention must still produce a notifying completion: %q", prepared)
+	}
+	if twice := p.PrepareRichCardFinalMarkdown(context.Background(), trusted, prepared); twice != prepared {
+		t.Fatalf("completion mention was duplicated: %q", twice)
+	}
+	var card map[string]any
+	if err := json.Unmarshal([]byte(buildRichCard(core.CardStatusDone, "done", nil, prepared, false, "")), &card); err != nil {
+		t.Fatal(err)
+	}
+	summary := card["config"].(map[string]any)["summary"].(map[string]any)["content"]
+	if summary != "已完成查询。" {
+		t.Fatalf("completion preview leaked mention markup: %v", summary)
+	}
+	// The shared progress transform must never inject the completion mention.
+	if progress := p.TransformRichCardMarkdown(context.Background(), trusted, answer); progress != answer {
+		t.Fatalf("progress notification was changed: %q", progress)
+	}
+}
+
+func TestFinalCardMentionPreparationPreservesExplicitRoutingAndUntrustedContexts(t *testing.T) {
+	p := &interactivePlatform{Platform: &Platform{}}
+	trusted := replyContext{messageID: "om_question", chatID: "oc_group", replyMentionID: "ou_sender"}
+	for _, body := range []string{
+		"", "\r\n\t ", "<at id=ou_sender></at> 完成", `<at id="ou_sender"></at> 完成`,
+		"<at id=ou_other></at> 完成", "<at id=all></at> 完成",
+		"<at id=ou_sender></at> <at id=ou_other></at>", `<at user_id="ou_sender">测试</at>`,
+		"`<at id=ou_sender></at>`", "```\n<at id=ou_sender></at>\n```",
+		"    <at id=ou_sender></at>", `\<at id=ou_sender></at>`, "<AT id=ou_other></AT>",
+	} {
+		if got := p.PrepareRichCardFinalMarkdown(context.Background(), trusted, body); got != body {
+			t.Errorf("existing mention or empty body changed: %q => %q", body, got)
+		}
+	}
+	for _, rc := range []any{
+		"invalid context", replyContext{messageID: "om_question", chatID: "oc_group"},
+		replyContext{chatID: "oc_group", replyMentionID: "ou_sender"},
+		replyContext{messageID: "om_question", replyMentionID: "ou_sender"},
+		replyContext{messageID: "om_question", chatID: "oc_group", replyMentionID: "all"},
+		replyContext{messageID: "om_question", chatID: "oc_group", replyMentionID: "ou_sender></at>"},
+	} {
+		if got := p.PrepareRichCardFinalMarkdown(context.Background(), rc, "完成"); got != "完成" {
+			t.Errorf("untrusted context injected a mention: %q", got)
+		}
+	}
+}
+
 func TestFinalCardMentionRequiresVerifiedTriggerSender(t *testing.T) {
 	p := &interactivePlatform{Platform: &Platform{}}
 	trusted := replyContext{messageID: "om_question", chatID: "oc_group", replyMentionID: "ou_sender"}

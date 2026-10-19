@@ -8291,7 +8291,11 @@ func (d *turnDelivery) deliver() {
 		}
 		if !terminalTextDelivered {
 			finalBody := resolveRichCardMarkdown(fullResponse, true)
-			if requiresNewFinalCard {
+			finalPreparer, hasFinalPreparer := p.(RichCardFinalMarkdownPreparer)
+			if hasFinalPreparer {
+				finalBody = finalPreparer.PrepareRichCardFinalMarkdown(terminalRenderCtx, replyCtx, finalBody)
+			}
+			if hasFinalDeliveryPolicy && (requiresNewFinalCard || hasFinalPreparer) {
 				requiresNewFinalCard = finalDeliveryPolicy.RequiresNewFinalCard(terminalRenderCtx, replyCtx, finalBody)
 			}
 			finalCard := buildRichCard(p, richCardSupporter, CardStatusDone, "done", toolSteps, finalBody, false, statusFooter)

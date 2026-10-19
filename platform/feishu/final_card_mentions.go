@@ -9,10 +9,29 @@ import (
 )
 
 var (
-	_                   core.RichCardFinalDeliveryPolicy = (*interactivePlatform)(nil)
-	leadingReplyMention                                  = regexp.MustCompile(`^<at\s+id=(?:"(ou_[A-Za-z0-9_-]+)"|'(ou_[A-Za-z0-9_-]+)'|(ou_[A-Za-z0-9_-]+))\s*></at>`)
-	cardMentionStart                                     = regexp.MustCompile(`(?i)<at\s`)
+	_                   core.RichCardFinalDeliveryPolicy   = (*interactivePlatform)(nil)
+	_                   core.RichCardFinalMarkdownPreparer = (*interactivePlatform)(nil)
+	leadingReplyMention                                    = regexp.MustCompile(`^<at\s+id=(?:"(ou_[A-Za-z0-9_-]+)"|'(ou_[A-Za-z0-9_-]+)'|(ou_[A-Za-z0-9_-]+))\s*></at>`)
+	cardMentionStart                                       = regexp.MustCompile(`(?i)<at\s`)
 )
+
+// PrepareRichCardFinalMarkdown makes an ordinary completed group reply notify
+// its verified human requester even when the model omits the mention. It runs
+// only at terminal delivery, after explicit mention routing and markdown
+// transforms, so progress cards and bot handoffs retain their own semantics.
+func (p *interactivePlatform) PrepareRichCardFinalMarkdown(_ context.Context, value any, markdown string) string {
+	rc, ok := value.(replyContext)
+	if !ok || !replySenderOpenID.MatchString(rc.replyMentionID) || rc.messageID == "" || rc.chatID == "" || strings.TrimSpace(markdown) == "" {
+		return markdown
+	}
+	// Preserve existing mentions and code examples exactly. In particular, do
+	// not make a model-supplied tag for another user eligible for a fresh send.
+	// The final delivery policy still validates the complete prepared body.
+	if cardMentionStart.MatchString(markdown) {
+		return markdown
+	}
+	return "<at id=" + rc.replyMentionID + "></at>\n\n" + markdown
+}
 
 // RequiresNewFinalCard preserves table/card rendering while putting a verified
 // reply-to-sender mention in a newly sent message, rather than adding it to an
