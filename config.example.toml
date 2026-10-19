@@ -1107,6 +1107,15 @@ app_secret = "your-feishu-app-secret"
 #                           # Optional: only these group chats bypass @mention; all other groups
 #                           # still require @. A TOML string array is also accepted.
 #                           # 可选：仅这些群聊无需 @；其他群聊仍需 @。也支持 TOML 字符串数组。
+# turn_record_enabled = false        # Opt in to appending one row per delivered turn to a Feishu Bitable.
+# turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"  # Wiki node token of the target Bitable (resolved to app_token at runtime).
+# turn_record_app_token = ""        # Or set the base app_token directly when the Bitable is not wiki-hosted.
+# turn_record_table_id = "tblPMqd52KLMKqrh"               # Target data table id.
+# turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }
+#                                   # Optional logical->column mapping.
+# 开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）；
+# 记录为尽力而为，异步写入，绝不阻塞或影响用户回合。需为应用开通 bitable:app / wiki:wiki:readonly 权限，
+# 并将机器人加为目标多维表格的协作者。默认关闭。
 # share_session_in_channel = false  # If true, all users in a group share one agent session
 #                                   # 设为 true 时，群聊内所有用户共享同一个 Agent 会话
 # thread_isolation = "topics_only" # off | topics_only | topic_per_message; legacy true = topic_per_message, false = off

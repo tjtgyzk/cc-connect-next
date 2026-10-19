@@ -104,3 +104,5 @@ Dynamic descriptions and runtime errors receive aggressive credential, long-blob
 - Bridge `capabilities_snapshot_v1`: its legacy command projection is derived from Manifest command contracts; protocol v1 does not embed the full Skill/configuration object
 
 The exhaustive generated configuration reference remains available at [configuration.md](configuration.md).
+
+`turn_recording` reports disabled or conditional availability without exposing the destination. When enabled, it asynchronously appends one audit row (time, nickname, user_id, group name, model, question, answer) per delivered turn to a configured Feishu Bitable. It reports write side effects and is best-effort; recording failure never fails the user turn.

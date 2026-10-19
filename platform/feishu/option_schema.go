@@ -19,6 +19,7 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 		"image_batch_window_ms", "mention_map", "peer_bots", "port", "progress_style", "reaction_emoji",
 		"reply_to_trigger", "require_mention", "resolve_mentions", "respond_to_at_everyone_and_here",
 		"share_session_in_channel", "thread_isolation",
+		"turn_record_enabled", "turn_record_wiki_token", "turn_record_app_token", "turn_record_table_id", "turn_record_fields",
 	})
 	for i := range options {
 		option := &options[i]
@@ -133,6 +134,33 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 			option.DescriptionZH = "选择飞书/Lark 话题隔离范围。off 沿用旧版按用户/频道会话；topics_only 隔离事件携带 thread_id 的所有真实话题（包括 P2P 私聊话题），普通群消息留在群主会话，普通无话题私聊保持原会话；topic_per_message 还会让每条群主会话消息拥有独立话题/session。两种启用模式都会给真实话题独立 Agent 会话和工作区绑定。省略该键映射 off；旧 true 映射 topic_per_message，旧 false 映射 off；新 Starter 和推荐 Profile 写入 topics_only。"
 			option.Keywords = []string{"topic isolation", "multiple topics", "话题隔离", "话题独立", "多个话题"}
 			option.PresetValues = []core.ConfigPresetValue{{Preset: "starter/recommended-feishu", Value: "topics_only", Description: "Isolate real topics without promoting ordinary group messages.", DescriptionZH: "隔离真实话题，不把普通群消息提升为话题。"}}
+		case "turn_record_enabled":
+			option.Type = "boolean"
+			option.Default = "false"
+			option.Requires = []string{"turn_record_app_token or turn_record_wiki_token, and turn_record_table_id"}
+			option.Description = "Opt in to appending one row per delivered turn (time, nickname, user_id, group name, model, question, answer) to a Feishu Bitable. Recording is best-effort and never blocks or fails the user turn."
+			option.DescriptionZH = "开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）。记录为尽力而为，绝不阻塞或影响用户回合。"
+			option.Keywords = []string{"turn record", "bitable", "audit log", "回合记录", "多维表格", "审计"}
+		case "turn_record_wiki_token":
+			option.Type = "string"
+			option.Default = defaultTurnRecordWikiToken
+			option.Description = "Wiki node token of the target Bitable. Resolved to the base app_token at runtime and cached. Ignored when turn_record_app_token is set."
+			option.DescriptionZH = "目标多维表格的 wiki 节点 token，运行时解析为 base app_token 并缓存；设置 turn_record_app_token 时忽略。"
+		case "turn_record_app_token":
+			option.Type = "string"
+			option.Default = "empty"
+			option.Description = "Base app_token of the target Bitable when it is not wiki-hosted. When set, wiki resolution is skipped."
+			option.DescriptionZH = "目标多维表格的 base app_token（非 wiki 托管时使用）；设置后跳过 wiki 解析。"
+		case "turn_record_table_id":
+			option.Type = "string"
+			option.Default = defaultTurnRecordTableID
+			option.Description = "Target data table id inside the Bitable."
+			option.DescriptionZH = "多维表格内的目标数据表 id。"
+		case "turn_record_fields":
+			option.Type = "table"
+			option.Default = "built-in Chinese column names"
+			option.Description = "Optional mapping from logical fields (time, name, user_id, chat, model, question, answer) to the actual Bitable column names."
+			option.DescriptionZH = "可选的列名映射：逻辑字段（time、name、user_id、chat、model、question、answer）到多维表格实际列名。"
 		}
 		if option.DefaultSource == core.ConfigDefaultAdapter && option.Default != "unset" {
 			option.DefaultSource = core.ConfigDefaultBuiltin
@@ -141,5 +169,9 @@ func feishuConfigOptions(defaultDomain string) []core.ConfigOption {
 	options = core.ConfigureOptionExample(options, "group_reply_all_chats", `group_reply_all_chats = "oc_chat_a,oc_chat_b"`)
 	options = core.ConfigureOptionExample(options, "mention_map", `mention_map = { Reviewer-Bot = "ou_bot_open_id" }`)
 	options = core.ConfigureOptionExample(options, "peer_bots", `peer_bots = { cli_peer_app_id = "Reviewer-Bot" }`)
+	options = core.ConfigureOptionExample(options, "turn_record_enabled", "turn_record_enabled = true")
+	options = core.ConfigureOptionExample(options, "turn_record_wiki_token", `turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"`)
+	options = core.ConfigureOptionExample(options, "turn_record_table_id", `turn_record_table_id = "tblPMqd52KLMKqrh"`)
+	options = core.ConfigureOptionExample(options, "turn_record_fields", `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`)
 	return options
 }

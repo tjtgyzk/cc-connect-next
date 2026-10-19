@@ -433,6 +433,25 @@ func (e *Engine) platformRuntimeCapabilities(platform Platform, status PlatformS
 		result.Capabilities = append(result.Capabilities, feature(item.id, item.description, item.zh, availability, CapabilityFallback{Mode: item.fallbackMode, Description: item.fallback, DescriptionZH: item.fallbackZH}))
 	}
 
+	recorder, canRecord := platform.(TurnRecorder)
+	recordingAvailability := platformAvailability(canRecord)
+	if canRecord && state == CapabilityAvailable {
+		if !recorder.TurnRecordingEnabled() {
+			recordingAvailability = unavailable("Turn recording is disabled; enable turn_record_enabled and configure the target Bitable.", "回合记录未启用；需启用 turn_record_enabled 并配置目标多维表格。")
+		} else {
+			recordingAvailability = conditional("Appends one audit row per delivered turn to the configured Feishu Bitable; asynchronous and best-effort.", "每个成功交付的回合向配置的飞书多维表格追加一行审计记录；异步且尽力而为。")
+		}
+	}
+	recording := feature("turn_recording",
+		"Append one audit row (time, nickname, user_id, group name, model, question, answer) per delivered turn to a Feishu Bitable. Asynchronous and best-effort; never blocks, delays, or fails the user turn.",
+		"每个成功交付的回合向飞书多维表格追加一行审计记录（时间、昵称、user_id、群名、模型、问题、答案）。异步且尽力而为，绝不阻塞、延迟或影响用户回合。",
+		recordingAvailability, CapabilityFallback{Mode: "skip", Description: "Keep the delivered answer; drop the record on failure without replaying the turn.", DescriptionZH: "保留已投递回答；失败时丢弃该记录，不重跑回合。"})
+	recording.Permission = CapabilityPermissionConditional
+	readOnly := false
+	recording.ReadOnly = &readOnly
+	recording.SideEffects = expandSideEffects([]string{"network", "external_service"})
+	result.Capabilities = append(result.Capabilities, recording)
+
 	proactiveAvailability := platformAvailability(reconstruct)
 	_, hasValidator := platform.(PersistentProactiveTargetValidator)
 	_, requiresSnapshot := platform.(PersistentReplyTargetRequirer)

@@ -4137,6 +4137,77 @@ Override the endpoint used to obtain Weibo access tokens.
 - Takes effect: `restart`
 - Example: `token_endpoint = "https://open-im.api.weibo.com/open/auth/ws_token"`
 
+### `projects.platforms.options.turn_record_app_token` — `feishu, lark`
+
+Base app_token of the target Bitable when it is not wiki-hosted. When set, wiki resolution is skipped.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `empty`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Example: `turn_record_app_token = "empty"`
+
+### `projects.platforms.options.turn_record_enabled` — `feishu, lark`
+
+Opt in to appending one row per delivered turn (time, nickname, user_id, group name, model, question, answer) to a Feishu Bitable. Recording is best-effort and never blocks or fails the user turn.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `boolean`
+- Requirement: `optional`
+- Default: `false`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Requires: `turn_record_app_token or turn_record_wiki_token, and turn_record_table_id`
+- Example: `turn_record_enabled = true`
+
+### `projects.platforms.options.turn_record_fields` — `feishu, lark`
+
+Optional mapping from logical fields (time, name, user_id, chat, model, question, answer) to the actual Bitable column names.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `table`
+- Requirement: `optional`
+- Default: `built-in Chinese column names`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Example: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案" }`
+
+### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
+
+Target data table id inside the Bitable.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `tblPMqd52KLMKqrh`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Example: `turn_record_table_id = "tblPMqd52KLMKqrh"`
+
+### `projects.platforms.options.turn_record_wiki_token` — `feishu, lark`
+
+Wiki node token of the target Bitable. Resolved to the base app_token at runtime and cached. Ignored when turn_record_app_token is set.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `F9ETwBtfRilKbfkMc03cEnvJn2f`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Example: `turn_record_wiki_token = "F9ETwBtfRilKbfkMc03cEnvJn2f"`
+
 ### `projects.platforms.options.user_id` — `matrix`
 
 Set or override the Matrix bot user ID.

@@ -605,13 +605,18 @@ type queuedMessage struct {
 type interactiveState struct {
 	// capabilityBriefSent flips after the capability brief has been
 	// prepended to a prompt for this state (guarded by mu).
-	capabilityBriefSent      bool
-	agentSession             AgentSession
-	platform                 Platform
-	replyCtx                 any
-	currentMessageID         string
-	currentUserID            string
-	currentSessionKey        string
+	capabilityBriefSent bool
+	agentSession        AgentSession
+	platform            Platform
+	replyCtx            any
+	currentMessageID    string
+	currentUserID       string
+	currentSessionKey   string
+	// Turn-audit capture for the in-flight turn (guarded by mu): the original
+	// user question and the sender's display/group names, used by TurnRecorder.
+	currentUserQuestion      string
+	currentUserName          string
+	currentChatName          string
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
@@ -4194,6 +4199,9 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.platform = p
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
+	state.currentUserQuestion = msg.Content
+	state.currentUserName = msg.UserName
+	state.currentChatName = msg.ChatName
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
 	e.activateAgentTurnCredential(state, msg.UserID, msg.SessionKey)
@@ -6582,6 +6590,7 @@ func (completion *turnCompletion) handle() bool {
 		return false
 	}
 	completion.commit(response, triggerAutoCompress, tokenEstimate)
+	completion.recordTurn(response)
 	return !completion.runAutoCompress(triggerAutoCompress)
 }
 
