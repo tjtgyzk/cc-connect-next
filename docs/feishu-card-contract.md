@@ -86,6 +86,13 @@ Lifecycle copy and reply-footer duration units are defined for English, Simplifi
 
 ## Native question cards
 
+The first question card in a request mentions the verified human sender when
+it is created in a group conversation. This automatically inserted mention takes
+its target only from the triggering Feishu event, never from model text. The notification
+summary is plain text. Follow-up questions in the same request and card updates
+do not repeat the mention. Private chats and contexts without a verified group
+sender retain the question card without a group mention.
+
 With the Codex `app_server` backend, an `item/tool/requestUserInput` request
 pauses the current turn. Each question card carries a fresh opaque token that
 maps to that pending native request, plus the question and option indices.

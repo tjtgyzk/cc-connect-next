@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -57,7 +58,7 @@ func (p *interactivePlatform) ReplyCard(ctx context.Context, rctx any, card *cor
 		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
 	}
 
-	cardJSON := p.renderBoundCard(card, rc.sessionKey, "")
+	cardJSON := p.renderNewReplyCard(card, rc)
 	if !p.shouldUseThreadOrReplyAPI(rc) {
 		if rc.chatID == "" {
 			return fmt.Errorf("%s: chatID is empty, cannot send card", p.tag())
@@ -81,7 +82,7 @@ func (p *interactivePlatform) SendCard(ctx context.Context, rctx any, card *core
 		return p.ReplyCard(ctx, rctx, card)
 	}
 
-	cardJSON := p.renderBoundCard(card, rc.sessionKey, "")
+	cardJSON := p.renderNewReplyCard(card, rc)
 	return p.createMessage(ctx, rc.chatID, larkim.MsgTypeInteractive, cardJSON, "send card")
 }
 
@@ -160,6 +161,36 @@ func (p *Platform) renderBoundCardMap(card *core.Card, sessionKey, directUserID 
 
 func (p *Platform) renderBoundCard(card *core.Card, sessionKey, directUserID string) string {
 	return renderCardForTarget(card, p.cardActionTarget(sessionKey, directUserID))
+}
+
+var replySenderOpenID = regexp.MustCompile(`^ou_[A-Za-z0-9_-]+$`)
+
+// A human mention must be present when the message is created to notify the
+// requester. Patch/refresh deliberately bypass this path, as do proactive cards
+// without the verified sender of an incoming group message.
+func (p *Platform) renderNewReplyCard(card *core.Card, rc replyContext) string {
+	if card == nil || !card.NotifyReplySender || rc.messageID == "" || rc.chatID == "" || !replySenderOpenID.MatchString(rc.replyMentionID) {
+		return p.renderBoundCard(card, rc.sessionKey, "")
+	}
+	copy := *card
+	copy.Elements = make([]core.CardElement, 0, len(card.Elements)+1)
+	copy.Elements = append(copy.Elements, core.CardMarkdown{Content: "<at id=" + rc.replyMentionID + "></at>"})
+	copy.Elements = append(copy.Elements, card.Elements...)
+	result := p.renderBoundCardMap(&copy, rc.sessionKey, "")
+	// Keep the notification/chat preview readable instead of exposing at markup.
+	fallback := ""
+	if card.Header != nil {
+		fallback = card.Header.Title
+	}
+	summary := fallback
+	for _, element := range card.Elements {
+		if markdown, ok := element.(core.CardMarkdown); ok {
+			summary = richCardSummary(markdown.Content, fallback)
+			break
+		}
+	}
+	result["config"].(map[string]any)["summary"] = map[string]any{"content": summary}
+	return marshalCardMap(result)
 }
 
 // renderCardMap converts a core.Card into the Feishu Interactive Card map
@@ -525,7 +556,11 @@ func renderCard(card *core.Card, sessionKey string) string {
 }
 
 func renderCardForTarget(card *core.Card, target cardActionTarget) string {
-	b, err := json.Marshal(renderCardMapForTarget(card, target))
+	return marshalCardMap(renderCardMapForTarget(card, target))
+}
+
+func marshalCardMap(card map[string]any) string {
+	b, err := json.Marshal(card)
 	if err != nil {
 		slog.Error("feishu: renderCard marshal failed", "error", err)
 		return `{"config":{"wide_screen_mode":true},"elements":[]}`

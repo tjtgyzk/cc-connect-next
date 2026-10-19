@@ -11,6 +11,9 @@ import (
 type Card struct {
 	Header   *CardHeader
 	Elements []CardElement
+	// NotifyReplySender asks supported platforms to notify the verified human
+	// who initiated the reply. It never accepts a model-supplied recipient ID.
+	NotifyReplySender bool
 }
 
 // CardHeader is the optional colored title bar of a card.

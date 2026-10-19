@@ -13434,7 +13434,9 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 			}
 			cb.Note(e.i18n.T(MsgAskQuestionNote))
 		}
-		e.sendWithCard(p, replyCtx, cb.Build())
+		card := cb.Build()
+		card.NotifyReplySender = qIdx == 0
+		e.sendWithCard(p, replyCtx, card)
 		return
 	}
 
@@ -13541,7 +13543,7 @@ func (e *Engine) renderCardForPlatformWorkspace(p Platform, card *Card, workspac
 	if card == nil {
 		return nil
 	}
-	out := &Card{}
+	out := &Card{NotifyReplySender: card.NotifyReplySender}
 	if card.Header != nil {
 		h := *card.Header
 		out.Header = &h

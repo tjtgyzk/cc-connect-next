@@ -9170,6 +9170,27 @@ func TestSendAskQuestionPrompt_CardPlatform_MultiQuestion_ShowsIndex(t *testing.
 	}
 }
 
+func TestSendAskQuestionPrompt_NotifiesOnlyFirstQuestion(t *testing.T) {
+	for _, kind := range []string{"single-select", "multi-select", "free-text"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newTestEngine()
+			p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+			qs := testMultiQuestions()
+			for i := range qs {
+				qs[i].MultiSelect = kind == "multi-select"
+				if kind == "free-text" {
+					qs[i].Options = nil
+				}
+			}
+			e.sendAskQuestionPrompt(p, "ctx", qs, 0, "testtoken")
+			e.sendAskQuestionPrompt(p, "ctx", qs, 1, "testtoken")
+			if len(p.sentCards) != 2 || !p.sentCards[0].NotifyReplySender || p.sentCards[1].NotifyReplySender {
+				t.Fatal("the first question must notify its sender, without repeating the notification for follow-up questions")
+			}
+		})
+	}
+}
+
 func TestSendAskQuestionPrompt_InlineButtonPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
