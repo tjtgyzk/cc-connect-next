@@ -9083,8 +9083,8 @@ func TestResolveAskQuestionAnswer_ButtonCallback(t *testing.T) {
 	e := newTestEngine()
 	q := testQuestions()[0]
 	got := e.resolveAskQuestionAnswer(q, "askq:0:1")
-	if got != "PostgreSQL" {
-		t.Errorf("expected PostgreSQL, got %s", got)
+	if got != "" {
+		t.Errorf("unbound callback must not resolve, got %s", got)
 	}
 }
 
@@ -9140,7 +9140,7 @@ func TestBuildAskQuestionResponse(t *testing.T) {
 func TestSendAskQuestionPrompt_CardPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
-	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0)
+	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0, "testtoken")
 
 	if len(p.sentCards) != 1 {
 		t.Fatalf("expected 1 card, got %d", len(p.sentCards))
@@ -9159,7 +9159,7 @@ func TestSendAskQuestionPrompt_CardPlatform_MultiQuestion_ShowsIndex(t *testing.
 	e := newTestEngine()
 	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	qs := testMultiQuestions()
-	e.sendAskQuestionPrompt(p, "ctx", qs, 0)
+	e.sendAskQuestionPrompt(p, "ctx", qs, 0, "testtoken")
 
 	if len(p.sentCards) != 1 {
 		t.Fatalf("expected 1 card, got %d", len(p.sentCards))
@@ -9173,20 +9173,20 @@ func TestSendAskQuestionPrompt_CardPlatform_MultiQuestion_ShowsIndex(t *testing.
 func TestSendAskQuestionPrompt_InlineButtonPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "telegram"}}
-	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0)
+	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0, "testtoken")
 
 	if len(p.buttonRows) != 3 {
 		t.Fatalf("expected 3 button rows, got %d", len(p.buttonRows))
 	}
-	if p.buttonRows[0][0].Data != "askq:0:1" {
-		t.Errorf("expected askq:0:1, got %s", p.buttonRows[0][0].Data)
+	if p.buttonRows[0][0].Data != "askq:testtoken:0:1" {
+		t.Errorf("expected askq:testtoken:0:1, got %s", p.buttonRows[0][0].Data)
 	}
 }
 
 func TestSendAskQuestionPrompt_PlainPlatform(t *testing.T) {
 	e := newTestEngine()
 	p := &stubPlatformEngine{n: "plain"}
-	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0)
+	e.sendAskQuestionPrompt(p, "ctx", testQuestions(), 0, "testtoken")
 
 	if len(p.sent) != 1 {
 		t.Fatal("expected 1 message")
@@ -9260,12 +9260,15 @@ func TestProcessInteractiveEvents_AskUserQuestionFromAgent_RendersRichCardPrompt
 		t.Fatalf("askq button count = %d, want 3", countCardActionValues(card, "askq:"))
 	}
 
+	state.mu.Lock()
+	answerAction := fmt.Sprintf("askq:%s:0:2", state.pending.QuestionToken)
+	state.mu.Unlock()
 	if !e.handlePendingPermission(p, &Message{
 		SessionKey: key,
 		UserID:     "user1",
-		Content:    "askq:0:2",
+		Content:    answerAction,
 		ReplyCtx:   "ctx",
-	}, "askq:0:2", key) {
+	}, answerAction, key) {
 		t.Fatal("expected AskUserQuestion answer to resolve pending request")
 	}
 

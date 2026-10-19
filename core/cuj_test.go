@@ -2775,3 +2775,139 @@ func waitAnswerProfileCUJ(t *testing.T, reason string, condition func() bool) {
 	}
 	t.Fatalf("timed out waiting for %s", reason)
 }
+
+// questionJourneySession models the native request/response boundary: the same
+// turn cannot finish before RespondPermission delivers a structured answer.
+type questionJourneySession struct {
+	events    chan Event
+	answers   chan string
+	done      chan struct{}
+	closeOnce sync.Once
+	mu        sync.Mutex
+	sends     int
+}
+
+func (s *questionJourneySession) Send(string, []ImageAttachment, []FileAttachment) error {
+	s.mu.Lock()
+	s.sends++
+	s.mu.Unlock()
+	go func() {
+		s.events <- Event{Type: EventPermissionRequest, RequestID: "native-environment", ToolName: "AskUserQuestion", PermissionDone: s.done,
+			Questions: []UserQuestion{{ID: "environment", Question: "Which environment?", Options: []UserQuestionOption{{Label: "prod"}, {Label: "stg"}}}}}
+		select {
+		case answer := <-s.answers:
+			s.events <- Event{Type: EventResult, Content: "Continued in " + answer, Done: true}
+		case <-s.done:
+			s.events <- Event{Type: EventResult, Content: "Question cancelled", Done: true}
+		}
+	}()
+	return nil
+}
+func (s *questionJourneySession) RespondPermission(id string, result PermissionResult) error {
+	if id != "native-environment" {
+		return fmt.Errorf("wrong native request")
+	}
+	answers, _ := result.UpdatedInput["answers"].(map[string]any)
+	answer, _ := answers["environment"].(string)
+	if answer != "prod" && answer != "stg" {
+		return fmt.Errorf("invalid environment")
+	}
+	s.answers <- answer
+	return nil
+}
+func (s *questionJourneySession) Events() <-chan Event     { return s.events }
+func (s *questionJourneySession) CurrentSessionID() string { return "native-environment-session" }
+func (s *questionJourneySession) Alive() bool              { return !requestDone(s.done) }
+func (s *questionJourneySession) Close() error             { s.closeOnce.Do(func() { close(s.done) }); return nil }
+
+func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
+	for _, environment := range []string{"prod", "stg"} {
+		t.Run(environment, func(t *testing.T) {
+			p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+			s := &questionJourneySession{events: make(chan Event, 8), answers: make(chan string, 1), done: make(chan struct{})}
+			e := NewEngine("test", &controllableAgent{nextSession: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+			t.Cleanup(func() { _ = s.Close(); _ = e.Stop() })
+			key := "test:alice"
+			// Action 1: request the query; the user sees a question, no result.
+			e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "alice", Content: "Check the synthetic device", ReplyCtx: "ctx"})
+			card := waitForSentCard(t, p)
+			if !strings.Contains(card.RenderText(), "Which environment?") {
+				t.Fatalf("question card: %s", card.RenderText())
+			}
+			var action string
+			for _, elem := range card.Elements {
+				if row, ok := elem.(CardListItem); ok && row.BtnText == environment {
+					action = row.BtnValue
+				}
+			}
+			if action == "" {
+				t.Fatal("environment choice missing")
+			}
+			for _, text := range p.getSent() {
+				if strings.Contains(text, "Continued in") {
+					t.Fatal("turn continued before answer")
+				}
+			}
+			// Action 2: an old unbound card cannot answer this question.
+			stale := questionTestMessage(key, "alice", "askq:0:1")
+			e.ReceiveMessage(p, stale)
+			if ack := <-stale.QuestionResponse; ack.Accepted || ack.Message == "" {
+				t.Fatalf("stale ack=%#v", ack)
+			}
+			// Action 3: a valid choice resumes the original native turn.
+			valid := questionTestMessage(key, "alice", action)
+			e.ReceiveMessage(p, valid)
+			if ack := <-valid.QuestionResponse; !ack.Accepted || ack.Answer != environment {
+				t.Fatalf("valid ack=%#v", ack)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				found := false
+				for _, text := range p.getSent() {
+					found = found || strings.Contains(text, "Continued in "+environment)
+				}
+				if found {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("missing resumed answer: %#v", p.getSent())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			// Action 4: duplicate delivery is rejected, with no new model prompt.
+			replay := questionTestMessage(key, "alice", action)
+			e.ReceiveMessage(p, replay)
+			if ack := <-replay.QuestionResponse; ack.Accepted {
+				t.Fatal("replay accepted")
+			}
+			s.mu.Lock()
+			sends := s.sends
+			s.mu.Unlock()
+			if sends != 1 {
+				t.Fatalf("native turns started=%d, want 1", sends)
+			}
+		})
+	}
+}
+
+func TestNativeQuestionDoneReleasesEngineWait(t *testing.T) {
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	s := &questionJourneySession{events: make(chan Event, 8), answers: make(chan string, 1), done: make(chan struct{})}
+	e := NewEngine("test", &controllableAgent{nextSession: s}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = s.Close(); _ = e.Stop() })
+	e.ReceiveMessage(p, &Message{SessionKey: "test:alice", Platform: "test", UserID: "alice", Content: "Ask environment", ReplyCtx: "ctx"})
+	waitForSentCard(t, p)
+	_ = s.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, text := range p.getSent() {
+			if strings.Contains(text, "Question cancelled") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("engine remained blocked after native cancellation: %#v", p.getSent())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

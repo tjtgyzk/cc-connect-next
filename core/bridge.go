@@ -134,6 +134,7 @@ type bridgeCardAction struct {
 	Action     string `json:"action"`
 	ReplyCtx   string `json:"reply_ctx"`
 	Project    string `json:"project,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
 }
 
 type bridgePreviewAck struct {
@@ -1140,9 +1141,9 @@ func (a *bridgeAdapter) handleCardAction(raw json.RawMessage) {
 		return
 	}
 
-	// askq: — AskUserQuestion answer; forward as a regular message
+	// askq: — retain callback identity for request/owner validation.
 	if strings.HasPrefix(ca.Action, "askq:") {
-		a.dispatchAsMessage(ref, ca.SessionKey, ca.ReplyCtx, ca.Action)
+		a.dispatchAsQuestionResponse(ref, ca)
 		return
 	}
 
@@ -1189,6 +1190,24 @@ func (a *bridgeAdapter) dispatchAsMessage(ref *bridgeEngineRef, sessionKey, repl
 		UserName:   "Web Admin",
 		Content:    content,
 		ReplyCtx:   newBridgeReplyCtx(a, sessionKey, replyCtx),
+	}
+	go ref.platform.handler(ref.platform, msg)
+}
+
+// dispatchAsQuestionResponse preserves the authenticated adapter's user identity.
+// The built-in Web client uses web-admin when no user_id is supplied.
+func (a *bridgeAdapter) dispatchAsQuestionResponse(ref *bridgeEngineRef, action bridgeCardAction) {
+	if ref.platform.handler == nil {
+		return
+	}
+	userID := action.UserID
+	if userID == "" {
+		userID = "web-admin"
+	}
+	msg := &Message{
+		SessionKey: action.SessionKey, Platform: a.platform, UserID: userID,
+		Content: action.Action, ReplyCtx: newBridgeReplyCtx(a, action.SessionKey, action.ReplyCtx),
+		IsQuestionResponse: true,
 	}
 	go ref.platform.handler(ref.platform, msg)
 }

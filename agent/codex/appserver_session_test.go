@@ -308,7 +308,7 @@ func TestAppServerSession_Issue68RejectsSubagentInteractiveRequests(t *testing.T
 			s := &appServerSession{
 				events:           make(chan core.Event, 2),
 				ctx:              ctx,
-				pendingApprovals: make(map[string]chan core.PermissionResult),
+				pendingApprovals: make(map[string]*appServerPendingApproval),
 				stdin:            stdin,
 				currentTurn:      "parent-turn",
 			}
@@ -365,7 +365,7 @@ func TestAppServerSession_Issue68RejectRequestWriteTimeoutAbortsTransport(t *tes
 		events:           make(chan core.Event, 1),
 		ctx:              ctx,
 		cancel:           cancel,
-		pendingApprovals: make(map[string]chan core.PermissionResult),
+		pendingApprovals: make(map[string]*appServerPendingApproval),
 		stdin:            stdin,
 		currentTurn:      "parent-turn",
 	}
@@ -478,7 +478,7 @@ func TestAppServerSession_HandleRequestUserInputEmitsAskQuestion(t *testing.T) {
 	s := &appServerSession{
 		events:           make(chan core.Event, 4),
 		ctx:              ctx,
-		pendingApprovals: make(map[string]chan core.PermissionResult),
+		pendingApprovals: make(map[string]*appServerPendingApproval),
 		stdin:            stdin,
 		currentTurn:      "turn-1",
 	}
@@ -541,7 +541,7 @@ func TestAppServerSession_HandleRequestUserInputWritesCodexResponse(t *testing.T
 	s := &appServerSession{
 		events:           make(chan core.Event, 4),
 		ctx:              ctx,
-		pendingApprovals: make(map[string]chan core.PermissionResult),
+		pendingApprovals: make(map[string]*appServerPendingApproval),
 		stdin:            stdin,
 		currentTurn:      "turn-1",
 	}

@@ -213,6 +213,9 @@ const (
 	MsgPermissionApproveAll      MsgKey = "permission_approve_all"
 	MsgPermissionDenied          MsgKey = "permission_denied_msg"
 	MsgPermissionHint            MsgKey = "permission_hint"
+	MsgQuestionProcessing        MsgKey = "question_processing"
+	MsgQuestionExpired           MsgKey = "question_expired"
+	MsgQuestionAnswered          MsgKey = "question_answered"
 	MsgQuietOn                   MsgKey = "quiet_on"
 	MsgQuietOff                  MsgKey = "quiet_off"
 	MsgDisplayModeCompact        MsgKey = "display_mode_compact"
@@ -2964,6 +2967,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "Agent 提問",
 		LangJapanese:           "エージェントの質問",
 		LangSpanish:            "Pregunta del agente",
+	},
+	MsgQuestionProcessing: {
+		LangEnglish:            "Confirming your answer. Please wait.",
+		LangChinese:            "正在确认答案，请稍候。",
+		LangTraditionalChinese: "正在確認答案，請稍候。",
+		LangJapanese:           "回答を確認しています。お待ちください。",
+		LangSpanish:            "Confirmando tu respuesta. Espera un momento.",
+	},
+	MsgQuestionExpired: {
+		LangEnglish:            "This question is no longer active. Please use the latest question card.",
+		LangChinese:            "此问题已失效，请使用最新的问题卡片。",
+		LangTraditionalChinese: "此問題已失效，請使用最新的問題卡片。",
+		LangJapanese:           "この質問は無効です。最新の質問カードを使用してください。",
+		LangSpanish:            "Esta pregunta ya no está activa. Usa la tarjeta más reciente.",
+	},
+	MsgQuestionAnswered: {
+		LangEnglish:            "✅ %s: **%s**",
+		LangChinese:            "✅ %s：**%s**",
+		LangTraditionalChinese: "✅ %s：**%s**",
+		LangJapanese:           "✅ %s: **%s**",
+		LangSpanish:            "✅ %s: **%s**",
 	},
 	MsgAskQuestionNote: {
 		LangEnglish:            "If buttons are unresponsive, reply with the option number (e.g. 1) or type your answer",

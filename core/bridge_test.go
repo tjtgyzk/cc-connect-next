@@ -1116,3 +1116,28 @@ func TestBridge_SessionMissingParams(t *testing.T) {
 		t.Fatal("expected error without target in switch")
 	}
 }
+
+func TestBridgeQuestionActionPreservesUserIdentity(t *testing.T) {
+	for _, user := range []string{"alice", ""} {
+		t.Run(user, func(t *testing.T) {
+			got := make(chan *Message, 1)
+			p := &BridgePlatform{handler: func(_ Platform, msg *Message) { got <- msg }}
+			a := &bridgeAdapter{platform: "test"}
+			a.dispatchAsQuestionResponse(&bridgeEngineRef{platform: p}, bridgeCardAction{
+				SessionKey: "test:question", Action: "askq:bound:0:1", UserID: user,
+			})
+			select {
+			case msg := <-got:
+				expected := user
+				if expected == "" {
+					expected = "web-admin"
+				}
+				if msg.UserID != expected || !msg.IsQuestionResponse || msg.Content != "askq:bound:0:1" {
+					t.Fatalf("question callback=%#v", msg)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("question callback not dispatched")
+			}
+		})
+	}
+}

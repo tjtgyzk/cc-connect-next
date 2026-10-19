@@ -186,7 +186,7 @@ type appServerSession struct {
 	pending   map[int64]chan rpcResponseEnvelope
 
 	approvalsMu      sync.Mutex
-	pendingApprovals map[string]chan core.PermissionResult
+	pendingApprovals map[string]*appServerPendingApproval
 
 	threadID atomic.Value
 	alive    atomic.Bool
@@ -213,6 +213,35 @@ const (
 	appServerResponseWriteTimeout = 1500 * time.Millisecond
 	appServerTitleUpdateTimeout   = 1500 * time.Millisecond
 )
+
+// One native server request is one consumable capability. Keep claimed requests
+// registered until the response is written so a concurrent turn cancellation can
+// still invalidate them, while a second answer is rejected immediately.
+type appServerPendingApproval struct {
+	answer     chan core.PermissionResult
+	ack        chan error
+	done       chan struct{}
+	canceled   chan struct{}
+	claimed    bool       // guarded by approvalsMu
+	deliveryMu sync.Mutex // serializes response write against native cancellation
+	ackOnce    sync.Once
+	doneOnce   sync.Once
+	cancelOnce sync.Once
+}
+
+func (p *appServerPendingApproval) acknowledge(err error) { p.ackOnce.Do(func() { p.ack <- err }) }
+
+func (p *appServerPendingApproval) finish() {
+	p.acknowledge(context.Canceled)
+	p.doneOnce.Do(func() { close(p.done) })
+}
+
+func (p *appServerPendingApproval) cancel() {
+	p.deliveryMu.Lock()
+	defer p.deliveryMu.Unlock()
+	p.cancelOnce.Do(func() { close(p.canceled) })
+	p.finish()
+}
 
 // appServerSessionParams bundles the launch configuration for a Codex
 // app-server session. The previous positional-string signature let call sites
@@ -266,7 +295,7 @@ func newAppServerSession(ctx context.Context, p appServerSessionParams) (*appSer
 		ctx:                 sessionCtx,
 		cancel:              cancel,
 		pending:             make(map[int64]chan rpcResponseEnvelope),
-		pendingApprovals:    make(map[string]chan core.PermissionResult),
+		pendingApprovals:    make(map[string]*appServerPendingApproval),
 		preambleSent:        p.resumeID != "" && p.resumeID != core.ContinueSession,
 		initialTitleHandled: p.resumeID != "" && p.resumeID != core.ContinueSession,
 	}
@@ -767,16 +796,122 @@ func (s *appServerSession) stageImages(prompt string, images []core.ImageAttachm
 
 func (s *appServerSession) RespondPermission(requestID string, result core.PermissionResult) error {
 	s.approvalsMu.Lock()
-	ch := s.pendingApprovals[requestID]
-	s.approvalsMu.Unlock()
-	if ch == nil {
+	pending := s.pendingApprovals[requestID]
+	if pending == nil || pending.claimed || (s.ctx != nil && s.ctx.Err() != nil) {
+		s.approvalsMu.Unlock()
 		return fmt.Errorf("codex app-server: no pending approval for request %s", requestID)
 	}
+	pending.claimed = true
+	pending.answer <- result
+	s.approvalsMu.Unlock()
+	return s.waitForApprovalWrite(requestID, pending)
+}
+
+func (s *appServerSession) waitForApprovalWrite(requestID string, pending *appServerPendingApproval) error {
+	// A local queue insertion is not a native answer. Report success only once
+	// the original JSON-RPC response has actually been written to app-server.
 	select {
-	case ch <- result:
+	case err := <-pending.ack:
+		return err
+	case <-s.contextDone():
+		select {
+		case err := <-pending.ack:
+			return err
+		default:
+		}
+		return context.Canceled
+	case <-time.After(2 * appServerResponseWriteTimeout):
+		select {
+		case err := <-pending.ack:
+			return err
+		default:
+		}
+		return fmt.Errorf("codex app-server: response write outcome unknown for request %s", requestID)
+	}
+}
+
+func (s *appServerSession) registerPendingApproval(requestID string) *appServerPendingApproval {
+	pending := &appServerPendingApproval{
+		answer: make(chan core.PermissionResult, 1), ack: make(chan error, 1), done: make(chan struct{}), canceled: make(chan struct{}),
+	}
+	s.approvalsMu.Lock()
+	defer s.approvalsMu.Unlock()
+	if s.pendingApprovals == nil {
+		s.pendingApprovals = make(map[string]*appServerPendingApproval)
+	}
+	if previous := s.pendingApprovals[requestID]; previous != nil {
+		previous.cancel()
+	}
+	s.pendingApprovals[requestID] = pending
+	return pending
+}
+
+func (s *appServerSession) writeApprovalResponse(pending *appServerPendingApproval, payload any) {
+	pending.deliveryMu.Lock()
+	defer pending.deliveryMu.Unlock()
+	select {
+	case <-pending.canceled:
+		pending.acknowledge(context.Canceled)
+		return
+	case <-s.contextDone():
+		pending.acknowledge(context.Canceled)
+		return
 	default:
 	}
-	return nil
+	err := s.writeJSONWithTimeout("approval response", payload, appServerResponseWriteTimeout)
+	pending.acknowledge(err)
+	if err != nil {
+		slog.Warn("codex app-server: approval response write failed", "error", err)
+		// The server may still be waiting for this response. This session cannot
+		// safely continue after a failed write; do not leave an orphaned turn.
+		s.emitError(fmt.Errorf("codex app-server approval response: %w", err))
+		s.abortTransport()
+	}
+}
+
+func (s *appServerSession) finishPendingApproval(requestID string, pending *appServerPendingApproval) {
+	s.approvalsMu.Lock()
+	if s.pendingApprovals[requestID] == pending {
+		delete(s.pendingApprovals, requestID)
+	}
+	s.approvalsMu.Unlock()
+	pending.finish()
+}
+
+// A zero timeout is intentional for human questions: elapsed wall time is not
+// an answer. They stay pending until answered or the native turn is canceled.
+func (s *appServerSession) waitForApproval(pending *appServerPendingApproval, timeout time.Duration) (core.PermissionResult, bool) {
+	var timeoutC <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timeoutC = timer.C
+	}
+	select {
+	case result := <-pending.answer:
+		select {
+		case <-pending.canceled:
+			return core.PermissionResult{}, false
+		case <-s.contextDone():
+			return core.PermissionResult{}, false
+		default:
+			return result, true
+		}
+	case <-pending.canceled:
+		return core.PermissionResult{}, false
+	case <-s.contextDone():
+		return core.PermissionResult{}, false
+	case <-timeoutC:
+		s.approvalsMu.Lock()
+		if pending.claimed {
+			// An answer won the deadline race and is already in the channel.
+			s.approvalsMu.Unlock()
+			return <-pending.answer, true
+		}
+		pending.claimed = true
+		s.approvalsMu.Unlock()
+		return core.PermissionResult{Behavior: "deny"}, true
+	}
 }
 
 func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage) {
@@ -871,40 +1006,30 @@ func (s *appServerSession) handleApprovalRequest(rawID json.RawMessage, method s
 		}
 	}
 
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	pending := s.registerPendingApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     toolName,
-		ToolInput:    toolInput,
-		ToolInputRaw: params,
+		Type:           core.EventPermissionRequest,
+		RequestID:      requestID,
+		PermissionDone: pending.done,
+		ToolName:       toolName,
+		ToolInput:      toolInput,
+		ToolInputRaw:   params,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		defer s.finishPendingApproval(requestID, pending)
+		result, respond := s.waitForApproval(pending, 5*time.Minute)
+		if !respond {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		decision := "decline"
 		if strings.EqualFold(result.Behavior, "allow") {
 			decision = "accept"
 		}
-		_ = s.writeJSON(map[string]any{
+		s.writeApprovalResponse(pending, map[string]any{
 			"jsonrpc": "2.0", "id": rawID,
 			"result": map[string]any{"decision": decision},
 		})
@@ -918,46 +1043,36 @@ func (s *appServerSession) handlePermissionsApproval(rawID json.RawMessage, para
 		return
 	}
 
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	pending := s.registerPendingApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     "Permissions",
-		ToolInput:    appServerJSON(params),
-		ToolInputRaw: params,
+		Type:           core.EventPermissionRequest,
+		RequestID:      requestID,
+		PermissionDone: pending.done,
+		ToolName:       "Permissions",
+		ToolInput:      appServerJSON(params),
+		ToolInputRaw:   params,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		defer s.finishPendingApproval(requestID, pending)
+		result, respond := s.waitForApproval(pending, 5*time.Minute)
+		if !respond {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		if strings.EqualFold(result.Behavior, "allow") {
 			perms := params["permissions"]
 			if perms == nil {
 				perms = map[string]any{}
 			}
-			_ = s.writeJSON(map[string]any{
+			s.writeApprovalResponse(pending, map[string]any{
 				"jsonrpc": "2.0", "id": rawID,
 				"result": map[string]any{"permissions": perms, "scope": "turn"},
 			})
 		} else {
-			_ = s.writeJSON(map[string]any{
+			s.writeApprovalResponse(pending, map[string]any{
 				"jsonrpc": "2.0", "id": rawID,
 				"result": map[string]any{"permissions": map[string]any{}},
 			})
@@ -986,38 +1101,28 @@ func (s *appServerSession) handleRequestUserInput(rawID json.RawMessage, paramsR
 	}
 
 	rawInput := appServerRequestUserInputRawInput(params)
-	ch := make(chan core.PermissionResult, 1)
-	s.approvalsMu.Lock()
-	s.pendingApprovals[requestID] = ch
-	s.approvalsMu.Unlock()
+	pending := s.registerPendingApproval(requestID)
 
 	s.flushPendingAsThinking()
 	s.emit(core.Event{
-		Type:         core.EventPermissionRequest,
-		RequestID:    requestID,
-		ToolName:     "AskUserQuestion",
-		ToolInput:    appServerJSON(rawInput),
-		ToolInputRaw: rawInput,
-		Questions:    questions,
+		Type:           core.EventPermissionRequest,
+		RequestID:      requestID,
+		PermissionDone: pending.done,
+		ToolName:       "AskUserQuestion",
+		ToolInput:      appServerJSON(rawInput),
+		ToolInputRaw:   rawInput,
+		Questions:      questions,
 	})
 
 	go func() {
-		timer := time.NewTimer(5 * time.Minute)
-		defer timer.Stop()
-		var result core.PermissionResult
-		select {
-		case result = <-ch:
-		case <-s.ctx.Done():
-			result = core.PermissionResult{Behavior: "deny"}
-		case <-timer.C:
-			result = core.PermissionResult{Behavior: "deny"}
+		defer s.finishPendingApproval(requestID, pending)
+		result, respond := s.waitForApproval(pending, 0)
+		if !respond {
+			return
 		}
-		s.approvalsMu.Lock()
-		delete(s.pendingApprovals, requestID)
-		s.approvalsMu.Unlock()
 
 		response := appServerRequestUserInputResponseFromResult(params.Questions, result)
-		_ = s.writeJSON(map[string]any{
+		s.writeApprovalResponse(pending, map[string]any{
 			"jsonrpc": "2.0", "id": rawID,
 			"result": response,
 		})
@@ -1042,6 +1147,7 @@ func appServerRequestUserInputQuestions(input []appServerRequestUserInputQuestio
 			continue
 		}
 		q := core.UserQuestion{
+			ID:       strings.TrimSpace(in.ID),
 			Question: questionText,
 			Header:   strings.TrimSpace(in.Header),
 		}
@@ -1105,7 +1211,11 @@ func appServerRequestUserInputResponseFromResult(questions []appServerRequestUse
 		if id == "" || text == "" {
 			continue
 		}
-		values := appServerRequestUserInputAnswerValues(answersRaw[text])
+		values := appServerRequestUserInputAnswerValues(answersRaw[id])
+		if len(values) == 0 {
+			// Older clients and non-Codex adapters key answers by question text.
+			values = appServerRequestUserInputAnswerValues(answersRaw[text])
+		}
 		if len(values) == 0 {
 			continue
 		}
@@ -1149,12 +1259,9 @@ func appServerRequestUserInputAnswerValues(raw any) []string {
 func (s *appServerSession) rejectPendingApprovals(err error) {
 	s.approvalsMu.Lock()
 	defer s.approvalsMu.Unlock()
-	for id, ch := range s.pendingApprovals {
+	for id, pending := range s.pendingApprovals {
 		delete(s.pendingApprovals, id)
-		select {
-		case ch <- core.PermissionResult{Behavior: "deny"}:
-		default:
-		}
+		pending.cancel()
 	}
 }
 
@@ -1198,6 +1305,7 @@ func (s *appServerSession) Alive() bool {
 func (s *appServerSession) Close() error {
 	s.alive.Store(false)
 	s.cancel()
+	s.rejectPendingApprovals(context.Canceled)
 
 	s.procMu.Lock()
 	if s.stdin != nil {
@@ -1334,6 +1442,7 @@ func (s *appServerSession) waitLoop() {
 		err = io.EOF
 	}
 	s.rejectPending(err)
+	s.rejectPendingApprovals(err)
 }
 
 func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
@@ -1359,6 +1468,21 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
 	switch method {
+	case "serverRequest/resolved":
+		var notif struct {
+			ThreadID  string          `json:"threadId"`
+			RequestID json.RawMessage `json:"requestId"`
+		}
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.ownsThread(method, notif.ThreadID) {
+			s.approvalsMu.Lock()
+			requestID := string(notif.RequestID)
+			if pending := s.pendingApprovals[requestID]; pending != nil {
+				delete(s.pendingApprovals, requestID)
+				pending.cancel()
+			}
+			s.approvalsMu.Unlock()
+		}
+
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.ownsThread(method, notif.ThreadID) {
@@ -1701,6 +1825,7 @@ func (s *appServerSession) completeTurn() {
 	}
 	s.currentTurn = ""
 	s.stateMu.Unlock()
+	s.rejectPendingApprovals(context.Canceled)
 	s.flushPendingAsText()
 	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
 }
@@ -1710,6 +1835,7 @@ func (s *appServerSession) failTurn(err error) {
 	s.currentTurn = ""
 	s.pendingMsgs = nil
 	s.stateMu.Unlock()
+	s.rejectPendingApprovals(err)
 	s.emitError(err)
 }
 
@@ -1851,8 +1977,18 @@ func (s *appServerSession) writeJSONWithTimeout(method string, value any, timeou
 	case err := <-done:
 		return err
 	case <-s.contextDone():
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
 		return s.contextErr()
 	case <-timer.C:
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
 		err := fmt.Errorf("%s write timed out", method)
 		slog.Warn("codex app-server write timed out, closing session", "method", method, "timeout", timeout)
 		s.abortTransport()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -337,11 +338,25 @@ type Message struct {
 	// "allow"/"deny" typed by a real user must NOT set this flag — they
 	// continue to flow through the regular message handler.
 	IsPermissionResponse bool
+	// IsQuestionResponse marks a structured-question callback. Callers provide a
+	// buffered acknowledgement channel before showing an accepted-answer card.
+	IsQuestionResponse   bool
+	QuestionResponse     chan QuestionResponseResult
+	questionResponseOnce *sync.Once // shared by normalized copies of this message
 	// UserMessageTimeMs is the platform message creation time in Unix milliseconds
 	// when known (e.g. Feishu im.message.message_received create_time). Used to
 	// drop late redeliveries that reuse a new message_id but an older create_time
 	// than a message already processed. Zero means unset (no ordering hint).
 	UserMessageTimeMs int64
+}
+
+// QuestionResponseResult acknowledges whether a structured answer was consumed.
+// Message is a localized explanation when Accepted is false.
+type QuestionResponseResult struct {
+	Accepted bool
+	Message  string
+	Question string
+	Answer   string
 }
 
 // EventType distinguishes different kinds of agent output.
@@ -359,6 +374,7 @@ const (
 
 // UserQuestion represents a structured question from AskUserQuestion.
 type UserQuestion struct {
+	ID          string               `json:"id,omitempty"`
 	Question    string               `json:"question"`
 	Header      string               `json:"header"`
 	Options     []UserQuestionOption `json:"options"`
@@ -393,6 +409,9 @@ type Event struct {
 	CacheReadInputTokens     int            // cache-read tokens (prior context retrieved from cache)
 	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
+	// PermissionDone closes when the agent no longer accepts this request.
+	// It lets a waiting UI release pending state on cancellation/disconnect.
+	PermissionDone <-chan struct{}
 }
 
 // HistoryEntry is one turn in a conversation.

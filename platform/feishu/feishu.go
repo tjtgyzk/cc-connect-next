@@ -1340,35 +1340,11 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		}, nil
 	}
 
-	// askq: — AskUserQuestion option selected, forward as user message
+	// Native question callbacks are acknowledged by the engine before a card
+	// is shown as answered. An old or duplicate click must not look successful.
 	if strings.HasPrefix(actionVal, "askq:") {
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey, directUserID: directUserID}
-		go p.dispatchCoreMessage(&core.Message{
-			SessionKey: sessionKey,
-			Platform:   p.platformName,
-			UserID:     userID,
-			UserName:   p.resolveUserName(userID),
-			ChatName:   p.resolveChatName(chatID),
-			Content:    actionVal,
-			ReplyCtx:   rctx,
-		})
-
-		answerLabel, _ := event.Event.Action.Value["askq_label"].(string)
-		askqQuestion, _ := event.Event.Action.Value["askq_question"].(string)
-		if answerLabel == "" {
-			answerLabel = actionVal
-		}
-		cb := core.NewCard().Title("✅ "+answerLabel, "green")
-		if askqQuestion != "" {
-			cb.Markdown(askqQuestion)
-		}
-		cb.Markdown("**→ " + answerLabel + "**")
-		return &callback.CardActionTriggerResponse{
-			Card: &callback.Card{
-				Type: "raw",
-				Data: p.renderBoundCardMap(cb.Build(), sessionKey, directUserID),
-			},
-		}, nil
+		return p.handleQuestionCardAction(actionVal, userID, rctx, values), nil
 	}
 
 	// cmd: — async command dispatch, with optional in-place card replacement

@@ -84,6 +84,45 @@ is ordinary prose; transport framing alone is never treated as a line ending.
 
 Lifecycle copy and reply-footer duration units are defined for English, Simplified Chinese, Traditional Chinese, Japanese, and Spanish. Each accepted turn snapshots the locale selected by its own triggering message, so concurrent sessions cannot make a card or footer switch language mid-turn; a queued turn receives its own fresh snapshot. A configured `done_emoji` is added to the triggering message only after a visible successful answer; it is suppressed for `NO_REPLY`, recalled triggers, and failures.
 
+## Native question cards
+
+With the Codex `app_server` backend, an `item/tool/requestUserInput` request
+pauses the current turn. Each question card carries a fresh opaque token that
+maps to that pending native request, plus the question and option indices.
+The engine validates the session, initiating user, token, question index,
+option range, and native request lifetime before consuming an answer.
+Consumption is atomic: duplicate clicks, earlier questions, completed turns,
+and cards from an earlier process cannot answer a newer request or become a
+new user prompt. Unbound question cards from older binaries are expired.
+
+Feishu updates the original question card only after the engine accepts the
+answer. On the final question, acceptance requires writing the answer to the
+original native JSON-RPC request. Rejected clicks show a warning without
+changing the card to a success state. Slow callbacks return a processing
+toast; a subsequent acceptance updates the exact original message.
+The native response preserves question IDs, including when questions share
+the same displayed text. Human questions wait until answered or canceled;
+elapsed time never supplies an empty answer on the user's behalf.
+
+Codex 0.158.0 requires `default_mode_request_user_input = true` under
+`[features]` in its effective Codex configuration to expose the native question
+tool in Default mode. This is separate from command execution approval policy.
+Changing the bridge binary requires a process restart; changing this Codex
+setting requires a newly started Codex app-server session. Neither change
+should be represented as a hot update to existing running tasks.
+
+The opt-in native integration test uses the real Codex executable and bridge
+adapter with a deterministic model endpoint on loopback. It creates temporary
+homes and a temporary project, performs no business queries, and sends no
+Feishu messages. Run a compiled test binary in a clean environment with
+`CC_CONNECT_CODEX_NATIVE_BIN` set to an absolute Codex 0.158.0 executable path:
+
+```bash
+go test -c ./agent/codex -o /tmp/cc-connect-native-test
+env -i PATH="$PATH" CC_CONNECT_CODEX_NATIVE_BIN=/path/to/codex \
+  /tmp/cc-connect-native-test -test.run '^TestNativeAppServerQuestionLifecycle$' -test.v
+```
+
 ## Executable verification
 
 Run the focused contract tests:
@@ -93,6 +132,7 @@ go test ./platform/feishu -run 'TestBuildRichCard|TestRichCardLifecycle' -count=
 go test ./core -run 'TestProcessInteractiveEvents_RichCard|TestProcessInteractiveEvents_QueuedRichCards' -count=1
 go test ./core -run 'TestProcessInteractiveEvents_CapturesRichCardLocalePerTurn|TestHandleMessageRecallDeletesRichCardWithoutPersistingPartialOutput|TestEngine_Stop.*RichCard' -count=1
 go test ./core -run TestCUJ -count=1
+go test -race ./core ./platform/feishu ./agent/codex -run 'TestQuestion|TestAppServerQuestion|TestCUJ_C10' -count=1
 ```
 
 These tests cover payload privacy, all supported locales, per-turn locale isolation, CardKit creation and monotonic updates, exact quoted replies, queued-turn isolation, configured mention resolution and tracked terminal text replacement, partial-answer failure handling, shutdown finalization, recalled-trigger cleanup, stale-card cleanup and generic failure fallback, and removal of the lasting `NO_REPLY` answer card. A real Feishu client check is still required before a release is described as visually verified, because client rendering, mention events, file permissions, and platform permissions are external to the repository.

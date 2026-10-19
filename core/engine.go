@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -834,10 +835,13 @@ type pendingPermission struct {
 	ToolName        string
 	ToolInput       map[string]any
 	InputPreview    string
-	Questions       []UserQuestion // non-nil for AskUserQuestion
-	Answers         map[int]string // collected answers keyed by question index
-	CurrentQuestion int            // index of the question currently being asked
-	Resolved        chan struct{}  // closed when user responds
+	Questions       []UserQuestion  // non-nil for AskUserQuestion
+	Answers         map[int]string  // collected answers keyed by question index
+	CurrentQuestion int             // index of the question currently being asked
+	QuestionUserID  string          // owner of the native question turn
+	QuestionToken   string          // random binding for this request's card callbacks
+	PermissionDone  <-chan struct{} // agent request cancellation/completion
+	Resolved        chan struct{}   // closed when user responds
 	resolveOnce     sync.Once
 }
 
@@ -2985,6 +2989,10 @@ func (e *Engine) startMessageRecallMonitor(sessionKey string) context.CancelFunc
 // receive hooks.
 func (e *Engine) normalizeIncomingContent(p Platform, msg *Message) (string, bool) {
 	content := strings.TrimSpace(msg.Content)
+	// Callback data is opaque protocol input, never an alias or shell command.
+	if isQuestionResponse(msg, content) {
+		return content, true
+	}
 	if content == "" && msg.ExtraContent == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
 		return "", false
 	}
@@ -3033,6 +3041,14 @@ func (e *Engine) rejectBannedContent(p Platform, msg *Message, content string) b
 }
 
 func (e *Engine) handleMessage(p Platform, msg *Message) {
+	questionCallback := isQuestionResponse(msg, msg.Content)
+	if questionCallback {
+		if msg.questionResponseOnce == nil {
+			msg.questionResponseOnce = &sync.Once{}
+		}
+		// Workspace/validation failures must also acknowledge the waiting card.
+		defer e.rejectQuestionResponse(msg)
+	}
 	if msg.Recalled {
 		e.handleMessageRecall(p, msg)
 		return
@@ -3100,14 +3116,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	// Rate limit check (per-user role-based, then global fallback)
-	if !e.checkRateLimit(msg) {
+	if !questionCallback && !e.checkRateLimit(msg) {
 		slog.Info("message rate limited",
 			"session", msg.SessionKey, "user_id", msg.UserID, "user", msg.UserName)
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRateLimited))
 		return
 	}
 
-	if e.rejectBannedContent(p, msg, content) {
+	if !questionCallback && e.rejectBannedContent(p, msg, content) {
 		return
 	}
 	e.rememberReplyTarget(p, msg)
@@ -3186,7 +3202,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	// command (for example, 帮助 -> /help). Give that normalized result the
 	// same command semantics as an ordinary message, but cap dispatch at two
 	// passes so nested `/new` input can never recurse indefinitely.
-	for commandPass := 0; commandPass < 2 && strings.HasPrefix(content, "/") && (len(msg.Images) == 0 || isNewCommand(content)); commandPass++ {
+	for commandPass := 0; !questionCallback && commandPass < 2 && strings.HasPrefix(content, "/") && (len(msg.Images) == 0 || isNewCommand(content)); commandPass++ {
 		beforeCommandContent := msg.Content
 		if e.handleCommand(p, msg, content) {
 			return
@@ -3810,7 +3826,7 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 
 	state, pending := e.lookupPending(iKey)
 
-	if state == nil || pending == nil {
+	if state == nil || pending == nil || (isQuestionResponse(msg, content) && !questionTokenMatches(pending, content)) {
 		// Fallback: cron new-per-run sessions use composite keys like
 		// "key#cron:sid" which won't match the plain sessionKey from
 		// platform permission button callbacks.
@@ -3823,14 +3839,11 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 			}
 		}
 		e.interactiveMu.Unlock()
-		// If multiple cron runs coexist for the same session, pick
-		// the first with a pending permission. In practice only one
-		// cron run per session should be in the pending state at a
-		// time, so this loop is bounded and deterministic for the
-		// expected case.
+		// Structured-question callbacks select their exact request by token.
+		// Ordinary permission/text replies keep the existing pending-run fallback.
 		for _, k := range cronKeys {
 			state, pending = e.lookupPending(k)
-			if state != nil && pending != nil {
+			if state != nil && pending != nil && (!isQuestionResponse(msg, content) || questionTokenMatches(pending, content)) {
 				goto found
 			}
 		}
@@ -3842,6 +3855,10 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 		// agent as user input (issue #826). Only applies to permission
 		// callbacks — plain text "allow"/"deny" from a real user falls
 		// through to the normal message handler below.
+		if isQuestionResponse(msg, content) {
+			e.rejectQuestionResponse(msg)
+			return true
+		}
 		if msg.IsPermissionResponse {
 			slog.Debug("dropping stale permission callback (no interactive state)",
 				"session", msg.SessionKey, "content", content)
@@ -3851,50 +3868,12 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 	}
 found:
 
-	// AskUserQuestion: interpret user response as an answer, not a permission decision
+	// A question callback must never resolve an unrelated permission request.
 	if len(pending.Questions) > 0 {
-		// Reject empty or whitespace-only content: some platforms echo delivery
-		// receipts or read-notifications as zero-length messages, and they must
-		// not be accepted as answers — otherwise the tool gets empty answers
-		// within ~500ms before the user has a chance to respond (#1086).
-		if strings.TrimSpace(content) == "" {
-			return false
-		}
-
-		curIdx := pending.CurrentQuestion
-		q := pending.Questions[curIdx]
-		answer := e.resolveAskQuestionAnswer(q, content)
-
-		if pending.Answers == nil {
-			pending.Answers = make(map[int]string)
-		}
-		pending.Answers[curIdx] = answer
-
-		// More questions remaining — advance to next and send new card
-		if curIdx+1 < len(pending.Questions) {
-			pending.CurrentQuestion = curIdx + 1
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
-			e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, curIdx+1)
-			return true
-		}
-
-		// All questions answered — build response and resolve
-		updatedInput := buildAskQuestionResponse(pending.ToolInput, pending.Questions, pending.Answers)
-
-		if err := state.agentSession.RespondPermission(pending.RequestID, PermissionResult{
-			Behavior:     "allow",
-			UpdatedInput: updatedInput,
-		}); err != nil {
-			slog.Error("failed to send AskUserQuestion response", "error", err)
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
-		}
-
-		state.mu.Lock()
-		state.pending = nil
-		state.mu.Unlock()
-		pending.resolve()
+		return e.handleQuestionResponse(p, msg, content, state, pending)
+	}
+	if isQuestionResponse(msg, content) {
+		e.rejectQuestionResponse(msg)
 		return true
 	}
 
@@ -3961,25 +3940,12 @@ func (e *Engine) lookupPending(iKey string) (*interactiveState, *pendingPermissi
 	return state, pending
 }
 
-// resolveAskQuestionAnswer converts user input into answer text.
-// It handles button callbacks ("askq:qIdx:optIdx"), numeric selections ("1", "1,3"), and free text.
+// resolveAskQuestionAnswer converts numeric selections and free text.
+// Structured callbacks are validated and consumed by handleQuestionResponse.
 func (e *Engine) resolveAskQuestionAnswer(q UserQuestion, input string) string {
 	input = strings.TrimSpace(input)
-
-	// Handle card button callback: "askq:qIdx:optIdx"
 	if strings.HasPrefix(input, "askq:") {
-		parts := strings.SplitN(input, ":", 3)
-		if len(parts) == 3 {
-			if idx, err := strconv.Atoi(parts[2]); err == nil && idx >= 1 && idx <= len(q.Options) {
-				return q.Options[idx-1].Label
-			}
-		}
-		// Legacy format "askq:N"
-		if len(parts) == 2 {
-			if idx, err := strconv.Atoi(parts[1]); err == nil && idx >= 1 && idx <= len(q.Options) {
-				return q.Options[idx-1].Label
-			}
-		}
+		return ""
 	}
 
 	// Try numeric index(es)
@@ -4017,7 +3983,11 @@ func buildAskQuestionResponse(originalInput map[string]any, questions []UserQues
 	answers := make(map[string]any)
 	for idx, ans := range collected {
 		if idx >= 0 && idx < len(questions) {
-			answers[questions[idx].Question] = ans
+			key := questions[idx].ID
+			if key == "" {
+				key = questions[idx].Question
+			}
+			answers[key] = ans
 		}
 	}
 	result["answers"] = answers
@@ -7525,19 +7495,30 @@ func (permission *turnPermission) handle() turnReadControl {
 	)
 
 	pending := &pendingPermission{
-		RequestID:    event.RequestID,
-		ToolName:     event.ToolName,
-		ToolInput:    event.ToolInputRaw,
-		InputPreview: event.ToolInput,
-		Questions:    event.Questions,
-		Resolved:     make(chan struct{}),
+		RequestID:      event.RequestID,
+		ToolName:       event.ToolName,
+		ToolInput:      event.ToolInputRaw,
+		InputPreview:   event.ToolInput,
+		Questions:      event.Questions,
+		Resolved:       make(chan struct{}),
+		PermissionDone: event.PermissionDone,
+	}
+	if isAskQuestion {
+		var tokenBytes [12]byte
+		if _, err := rand.Read(tokenBytes[:]); err != nil {
+			slog.Error("failed to bind question card", "error", err)
+			_ = state.agentSession.RespondPermission(event.RequestID, PermissionResult{Behavior: "deny"})
+			return turnReadContinue
+		}
+		pending.QuestionToken = hex.EncodeToString(tokenBytes[:])
 	}
 	state.mu.Lock()
+	pending.QuestionUserID = state.currentUserID
 	state.pending = pending
 	state.mu.Unlock()
 
 	if isAskQuestion {
-		e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0)
+		e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0, pending.QuestionToken)
 	} else {
 		permLimit := turnDisplay.ToolMaxLen
 		if permLimit > 0 {
@@ -7559,6 +7540,13 @@ func (permission *turnPermission) handle() turnReadControl {
 	select {
 	case <-pending.Resolved:
 		slog.Info("permission resolved", "request_id", event.RequestID)
+	case <-pending.PermissionDone:
+		state.mu.Lock()
+		if state.pending == pending {
+			state.pending = nil
+		}
+		state.mu.Unlock()
+		pending.resolve()
 	case <-silentCancelCh:
 		permissionInterrupted = true
 	case <-stopCh:
@@ -13399,7 +13387,7 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 
 // sendAskQuestionPrompt renders one question (by index) from the AskUserQuestion list.
 // qIdx is the 0-based index of the question to display.
-func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int) {
+func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int, token string) {
 	if qIdx >= len(questions) {
 		return
 	}
@@ -13436,10 +13424,12 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 				if opt.Description != "" {
 					desc += " — " + opt.Description
 				}
-				answerData := fmt.Sprintf("askq:%d:%d", qIdx, i+1)
+				answerData := fmt.Sprintf("askq:%s:%d:%d", token, qIdx, i+1)
 				cb.ListItemBtnExtra(desc, opt.Label, "default", answerData, map[string]string{
-					"askq_label":    opt.Label,
-					"askq_question": q.Question,
+					"askq_label":           opt.Label,
+					"askq_question":        q.Question,
+					"question_processing":  e.i18n.T(MsgQuestionProcessing),
+					"question_unavailable": e.i18n.T(MsgQuestionExpired),
 				})
 			}
 			cb.Note(e.i18n.T(MsgAskQuestionNote))
@@ -13478,7 +13468,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		}
 		var rows [][]ButtonOption
 		for i, opt := range q.Options {
-			rows = append(rows, []ButtonOption{{Text: opt.Label, Data: fmt.Sprintf("askq:%d:%d", qIdx, i+1)}})
+			rows = append(rows, []ButtonOption{{Text: opt.Label, Data: fmt.Sprintf("askq:%s:%d:%d", token, qIdx, i+1)}})
 		}
 		if err := e.waitOutgoing(p); err != nil {
 			slog.Warn("sendAskQuestionPrompt: outgoing wait cancelled", "platform", p.Name(), "error", err)
