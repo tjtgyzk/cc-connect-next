@@ -42,7 +42,9 @@ type TurnRecord struct {
 	ChatName       string    // group/chat name (empty for direct messages)
 	Model          string    // model used for this turn (optional)
 	SessionKey     string
-	Question       string        // original user question before prompt enrichment; empty for attachment-only input
+	ConversationID string        // opaque local conversation identity; stable across native session resets and process restarts
+	Language       Language      // effective language for archive presentation
+	Question       string        // original question, accepted steers and structured clarifications; excludes prompt enrichment
 	Answer         string        // final visible answer
 	MessageID      string        // trigger message id
 	Summary        string        // bounded task title derived from the original question

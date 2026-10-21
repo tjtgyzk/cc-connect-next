@@ -101,10 +101,14 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 	more := idx+1 < len(pending.Questions)
 	var updatedInput map[string]any
 	agentSession := state.agentSession
+	recordInput := state.currentTurnRecord
+	messageID := state.currentMessageID
+	generation := state.presentationGeneration
 	if more {
 		pending.CurrentQuestion = idx + 1
 	} else {
 		updatedInput = buildAskQuestionResponse(pending.ToolInput, pending.Questions, pending.Answers)
+		pending.questionResponseClaimed = true
 		state.pending = nil
 	}
 	state.mu.Unlock()
@@ -123,6 +127,7 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 			}
 			return true
 		}
+		e.recordAcceptedQuestion(state, agentSession, recordInput, messageID, generation, pending, msg)
 	}
 	acknowledgeQuestion(msg, QuestionResponseResult{Accepted: true, Question: q.Question, Answer: answer})
 	// A callback-aware platform updates the original card after acknowledgement.
@@ -133,4 +138,41 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 		e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, idx+1, pending.QuestionToken)
 	}
 	return true
+}
+
+// Record only accepted structured answers. Permission ToolInput may contain
+// commands or credentials and must never be serialized into the conversation.
+func (e *Engine) recordAcceptedQuestion(state *interactiveState, agentSession AgentSession, input turnRecordInput, messageID string, generation uint64, pending *pendingPermission, msg *Message) {
+	if input.userID == "" || messageID == "" || input.messageID != messageID || pending.ToolName != "AskUserQuestion" || len(pending.Questions) == 0 {
+		return
+	}
+	sender := strings.TrimSpace(msg.UserName)
+	if sender == "" && msg.UserID == input.userID {
+		sender = input.userName
+	}
+	if sender == "" {
+		sender = msg.UserID
+	}
+	parts := []string{e.i18n.Tf(MsgTurnRecordClarification, sender)}
+	for index, question := range pending.Questions {
+		answer, ok := pending.Answers[index]
+		if !ok || strings.TrimSpace(answer) == "" {
+			return
+		}
+		parts = append(parts, e.i18n.Tf(MsgQuestionAnswered, question.Question, answer))
+	}
+	addition := strings.Join(parts, "\n")
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.stopped || e.ctx.Err() != nil || state.agentSession != agentSession ||
+		state.currentMessageID != messageID || state.presentationGeneration != generation ||
+		state.discardTurnMessageID == messageID || state.currentTurnRecord.messageID != input.messageID ||
+		state.currentTurnRecord.sessionKey != input.sessionKey || state.currentTurnRecord.userID != input.userID {
+		return
+	}
+	if state.currentTurnRecord.question == "" {
+		state.currentTurnRecord.question = addition
+	} else {
+		state.currentTurnRecord.question += "\n\n" + addition
+	}
 }

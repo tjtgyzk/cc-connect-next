@@ -1399,6 +1399,45 @@ func TestCUJ_B1_NewCreatesIndependentSession(t *testing.T) {
 	if env.sentContains("first message") {
 		t.Fatalf("/history after prompted /new exposed the previous session: %v", env.plat.getSent())
 	}
+
+	t.Run("turn archive follows conversation boundaries", func(t *testing.T) {
+		p := newTurnRecordPlatform()
+		e := NewEngine("archive-project", &cujAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+		t.Cleanup(func() { _ = e.Stop() })
+		key := "test:archive-topic"
+		send := func(id, content string) {
+			e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: id, UserID: "alice", Content: content, ReplyCtx: id})
+		}
+		// Two ordinary questions remain in one conversation. /new creates a
+		// separate archive identity even when the native agent reuses its ID.
+		for i, question := range []string{"check service", "include yesterday"} {
+			send(fmt.Sprintf("question-%d", i), question)
+			waitForSteer(t, "delivered and archived answer", func() bool {
+				return len(p.snapshot()) == i+1 && !e.sessions.GetOrCreateActive(key).Busy()
+			})
+		}
+		send("new-command", "/new")
+		send("new-question", "check a different issue")
+		waitForSteer(t, "fresh conversation answer", func() bool {
+			return len(p.snapshot()) == 3 && !e.sessions.GetOrCreateActive(key).Busy()
+		})
+		rows := p.snapshot()
+		if rows[0].ConversationID == "" || rows[0].ConversationID != rows[1].ConversationID || rows[2].ConversationID == rows[0].ConversationID {
+			t.Fatalf("archive cannot group follow-ups and separate /new: %+v", rows)
+		}
+		if rows[0].Question != "check service" || rows[1].Question != "include yesterday" || rows[2].Question != "check a different issue" {
+			t.Fatalf("archive lost original question text: %+v", rows)
+		}
+		answers := 0
+		for _, sent := range p.getSent() {
+			if strings.Contains(sent, "ok") {
+				answers++
+			}
+		}
+		if answers != 3 {
+			t.Fatalf("all three answers must remain visible, got %v", p.getSent())
+		}
+	})
 }
 
 // CUJ-B2 · /list shows all sessions for the user.
@@ -2918,7 +2957,8 @@ func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
 			if len(rows) != 1 {
 				t.Fatalf("native continuation/replay created %d audit rows, want 1", len(rows))
 			}
-			assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "Alice", "", "Check the synthetic device", "Continued in "+environment)
+			question := "Check the synthetic device\n\nClarification (Alice):\n✅ Which environment?: **" + environment + "**"
+			assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "Alice", "", question, "Continued in "+environment)
 		})
 	}
 }

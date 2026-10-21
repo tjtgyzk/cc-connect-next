@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -27,6 +29,50 @@ func (msg *Message) turnRecordInputSnapshot() turnRecordInput {
 		userID: msg.UserID, userName: msg.UserName, chatName: msg.ChatName,
 		sessionKey: msg.SessionKey, messageID: msg.MessageID, question: msg.Content,
 	}
+}
+
+// A steer continues the original native turn. Keep all accepted raw questions
+// while retaining the original archive requester. Delivery ownership still
+// follows the latest trigger. Prompt-enriched content (capability briefs,
+// quotes, sender metadata) never enters the archive.
+func (e *Engine) appendSteeredTurnRecord(previous, next turnRecordInput) turnRecordInput {
+	if previous.userID == "" || previous.messageID == "" {
+		return next
+	}
+	sender := strings.TrimSpace(next.userName)
+	if sender == "" {
+		sender = next.userID
+	}
+	next.userID, next.userName = previous.userID, previous.userName
+	next.chatName, next.sessionKey = previous.chatName, previous.sessionKey
+	if previous.messageID == next.messageID || next.question == "" {
+		next.question = previous.question
+		return next
+	}
+	addition := e.i18n.Tf(MsgTurnRecordFollowup, sender) + "\n" + next.question
+	if previous.question == "" {
+		next.question = addition
+	} else {
+		next.question = previous.question + "\n\n" + addition
+	}
+	return next
+}
+
+// Derive identity from the exact local session that processed the turn, never
+// from the current active session or a replaceable provider/native thread ID.
+// CreatedAt prevents collisions if a session store is recreated from s1.
+func (e *Engine) turnConversationID(session *Session, sessionKey string) string {
+	if session == nil {
+		return ""
+	}
+	session.mu.Lock()
+	id, createdAt := session.ID, session.CreatedAt
+	session.mu.Unlock()
+	if id == "" {
+		return ""
+	}
+	identity := fmt.Sprintf("%q:%q:%q:%q", e.name, sessionKey, id, createdAt.UTC().Format(time.RFC3339Nano))
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 }
 
 // recordTurn persists a successfully delivered turn through the platform's
@@ -67,6 +113,8 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 		ChatName:       input.chatName,
 		Model:          t.engine.turnModel(state),
 		SessionKey:     input.sessionKey,
+		ConversationID: t.engine.turnConversationID(t.session, input.sessionKey),
+		Language:       t.engine.i18n.CurrentLang(),
 		Question:       input.question,
 		Answer:         response.base,
 		MessageID:      completion.msgID,

@@ -189,6 +189,11 @@ const (
 	MsgToolResultFmtOk           MsgKey = "tool_result_fmt_ok"
 	MsgToolResultFmtFailed       MsgKey = "tool_result_fmt_failed"
 	MsgTurnRecordAttachmentTask  MsgKey = "turn_record_attachment_task"
+	MsgTurnRecordFollowup        MsgKey = "turn_record_followup_question"
+	MsgTurnRecordClarification   MsgKey = "turn_record_clarification"
+	MsgTopicArchiveTurn          MsgKey = "topic_archive_turn"
+	MsgTopicArchiveQuestion      MsgKey = "topic_archive_question"
+	MsgTopicArchiveAnswer        MsgKey = "topic_archive_answer"
 	MsgExecutionStopped          MsgKey = "execution_stopped"
 	MsgSessionCancelled          MsgKey = "session_cancelled"
 	MsgNoExecution               MsgKey = "no_execution"
@@ -744,6 +749,41 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgTopicArchiveTurn: {
+		LangEnglish:            "Turn %d",
+		LangChinese:            "第 %d 轮",
+		LangTraditionalChinese: "第 %d 輪",
+		LangJapanese:           "第 %d ターン",
+		LangSpanish:            "Turno %d",
+	},
+	MsgTopicArchiveQuestion: {
+		LangEnglish:            "Question:",
+		LangChinese:            "问题：",
+		LangTraditionalChinese: "問題：",
+		LangJapanese:           "質問：",
+		LangSpanish:            "Pregunta:",
+	},
+	MsgTopicArchiveAnswer: {
+		LangEnglish:            "Answer:",
+		LangChinese:            "答复：",
+		LangTraditionalChinese: "答覆：",
+		LangJapanese:           "回答：",
+		LangSpanish:            "Respuesta:",
+	},
+	MsgTurnRecordFollowup: {
+		LangEnglish:            "Follow-up question (%s):",
+		LangChinese:            "追加问题（%s）：",
+		LangTraditionalChinese: "追加問題（%s）：",
+		LangJapanese:           "追加の質問（%s）：",
+		LangSpanish:            "Pregunta adicional (%s):",
+	},
+	MsgTurnRecordClarification: {
+		LangEnglish:            "Clarification (%s):",
+		LangChinese:            "补充信息（%s）：",
+		LangTraditionalChinese: "補充資訊（%s）：",
+		LangJapanese:           "補足情報（%s）：",
+		LangSpanish:            "Aclaración (%s):",
+	},
 	MsgTurnRecordAttachmentTask: {
 		LangEnglish:            "Attachment task",
 		LangChinese:            "附件任务",

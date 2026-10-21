@@ -601,6 +601,69 @@ func TestFeishuAccessControlContractRejectsSilentArrayFallback(t *testing.T) {
 	}
 }
 
+func TestFeishuTopicArchiveConfigValidationMatchesParser(t *testing.T) {
+	fields := map[string]any{
+		"task_id": "任务ID", "turn_count": "交互轮数", "conversation": "完整对话",
+		"trace_history": "历史Trace", "archive_state": "归档数据", "record_kind": "归档类型",
+	}
+	newOptions := func() map[string]any {
+		mapping := make(map[string]any, len(fields))
+		for key, value := range fields {
+			mapping[key] = value
+		}
+		return map[string]any{
+			"app_id": "cli_synthetic_test", "app_secret": "synthetic-test-secret",
+			"turn_record_enabled": true, "turn_record_mode": "topic", "turn_record_fields": mapping,
+		}
+	}
+	for _, platform := range []string{"feishu", "lark"} {
+		t.Run(platform, func(t *testing.T) {
+			if err := core.ValidatePlatformOptions(platform, newOptions()); err != nil {
+				t.Fatalf("valid topic archive rejected: %v", err)
+			}
+			legacy := newOptions()
+			delete(legacy, "turn_record_mode")
+			delete(legacy, "turn_record_fields")
+			if err := core.ValidatePlatformOptions(platform, legacy); err != nil {
+				t.Fatalf("legacy per-turn archive rejected: %v", err)
+			}
+			for _, mode := range []any{"turn", "topic"} {
+				opts := newOptions()
+				opts["turn_record_mode"] = mode
+				if err := core.ValidatePlatformOptions(platform, opts); err != nil {
+					t.Errorf("valid mode %v rejected: %v", mode, err)
+				}
+			}
+			for _, mode := range []any{true, "unknown", "TOPIC", " topic ", "", " "} {
+				opts := newOptions()
+				opts["turn_record_mode"] = mode
+				if err := core.ValidatePlatformOptions(platform, opts); err == nil || !strings.Contains(err.Error(), "turn_record_mode") {
+					t.Errorf("mode %v must be rejected consistently with parser, got %v", mode, err)
+				}
+			}
+			for key := range fields {
+				for _, invalid := range []any{nil, " ", true, "问题"} {
+					opts := newOptions()
+					mapping := opts["turn_record_fields"].(map[string]any)
+					if invalid == nil {
+						delete(mapping, key)
+					} else {
+						mapping[key] = invalid
+					}
+					if err := core.ValidatePlatformOptions(platform, opts); err == nil || !strings.Contains(err.Error(), key) {
+						t.Errorf("invalid mapping %s=%v must be rejected, got %v", key, invalid, err)
+					}
+				}
+			}
+			opts := newOptions()
+			opts["turn_record_fields"].(map[string]any)["conversation"] = "历史Trace"
+			if err := core.ValidatePlatformOptions(platform, opts); err == nil || !strings.Contains(err.Error(), "distinct column") {
+				t.Errorf("duplicate topic columns must be rejected, got %v", err)
+			}
+		})
+	}
+}
+
 func TestEnvironmentContractDefaultsMatchRuntimeConstants(t *testing.T) {
 	catalog := config.CapabilityCatalog("v-test")
 	find := func(path string) core.ConfigOption {

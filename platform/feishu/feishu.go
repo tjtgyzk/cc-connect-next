@@ -152,6 +152,9 @@ func validatePlatformOptions(name string) core.OptionsValidator {
 		if len(mentionMap) > 0 && !resolveMentions {
 			return fmt.Errorf("%s: mention_map requires resolve_mentions = true", name)
 		}
+		if _, err := parseTurnRecordOptions(opts); err != nil {
+			return fmt.Errorf("%s: invalid turn recording options: %w", name, err)
+		}
 		return nil
 	}
 }

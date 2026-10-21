@@ -4153,7 +4153,7 @@ Base app_token of the target Bitable when it is not wiki-hosted. When set, wiki 
 
 ### `projects.platforms.options.turn_record_enabled` — `feishu, lark`
 
-Opt in to appending one row per delivered turn (time, nickname, user_id, group name, model, question, answer) to a Feishu Bitable. Recording is best-effort and never blocks or fails the user turn.
+Opt in to recording delivered turns in a Feishu Bitable. turn_record_mode defaults to one row per turn; topic mode maintains one main row per isolated topic/session. Recording is best-effort and never blocks or fails the user turn.
 
 - Source: `toml`
 - Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
@@ -4168,7 +4168,7 @@ Opt in to appending one row per delivered turn (time, nickname, user_id, group n
 
 ### `projects.platforms.options.turn_record_fields` — `feishu, lark`
 
-Map time, name, user_id, chat, model, question and answer to existing text columns. Optional requester (person/type 11, same-app open_id), trace (URL/type 15), duration (number/type 2, seconds including user waits but excluding queue time), tool_count (number/type 2) and summary (text/type 1) mappings default to empty and are omitted unless configured. Mapping values must be column-name strings; enrichment columns must be distinct. Create the correctly typed columns before enabling their mappings. Missing trace or summary data is omitted. The legacy user_id remains the tenant user_id; identity IDs are never displayed as nicknames.
+Map time, name, user_id, chat, model, question and answer to existing text columns. Optional requester (person/type 11, same-app open_id), trace (URL/type 15), duration (number/type 2, seconds including user waits but excluding queue time), tool_count (number/type 2) and summary (text/type 1) mappings default to empty and are omitted unless configured. Mapping values must be column-name strings; enrichment columns must be distinct. Create the correctly typed columns before enabling their mappings. Missing trace or summary data is omitted. The legacy user_id remains the tenant user_id; identity IDs are never displayed as nicknames. Topic mode additionally requires task_id (text/type 1), turn_count (number/type 2), conversation, trace_history, archive_state and record_kind (text/type 1). archive_state holds the canonical versioned JSON journal; task_id and archive_state may be hidden in views but must remain writable. record_kind is set to 主记录.
 
 - Source: `toml`
 - Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
@@ -4178,7 +4178,23 @@ Map time, name, user_id, chat, model, question and answer to existing text colum
 - Default: `built-in seven Chinese column names; enrichment mappings empty`
 - Default source: `builtin`
 - Takes effect: `restart`
-- Example: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要" }`
+- Example: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要", task_id = "任务ID", turn_count = "交互轮数", conversation = "完整对话", trace_history = "历史Trace", archive_state = "归档数据", record_kind = "归档类型" }`
+
+### `projects.platforms.options.turn_record_mode` — `feishu, lark`
+
+Choose turn (one row per delivered answer) or topic (one main record per isolated topic and local session; /new starts another record). Ordinary non-topic messages remain independent. Topic mode retains the original question/requester, latest answer and time, complete ordered conversation and trace history, and accumulated duration/tool count. It validates native field types and versioned archive state before updating, deduplicates native session/turn IDs or message IDs across restarts, and refuses conflicting turns or duplicate task IDs. Deploy only one archive writer per table; this is not cross-process compare-and-swap. Queueing remains best-effort. Text/state above 100000 bytes is rejected without truncation; existing rows are not automatically migrated.
+
+- Source: `toml`
+- Placement: `[projects.platforms.options] (inside one [[projects.platforms]])`
+- Scope: `platform` (`feishu, lark`)
+- Type: `string`
+- Requirement: `optional`
+- Default: `turn`
+- Default source: `builtin`
+- Takes effect: `restart`
+- Requires: `topic requires turn_record_fields.task_id, turn_count, conversation, trace_history, archive_state and record_kind`
+- Allowed values: `turn`, `topic`
+- Example: `turn_record_mode = "turn"`
 
 ### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
 

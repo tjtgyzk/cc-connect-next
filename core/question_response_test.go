@@ -14,7 +14,9 @@ const questionTestToken = "0123456789abcdef01234567"
 
 func questionTestState(e *Engine, key string, rec AgentSession, questions []UserQuestion) *interactiveState {
 	state := &interactiveState{
-		agentSession: rec,
+		agentSession:     rec,
+		currentMessageID: "original-message", currentSessionKey: key,
+		currentTurnRecord: turnRecordInput{userID: "alice", userName: "Alice", sessionKey: key, messageID: "original-message", question: "original question"},
 		pending: &pendingPermission{
 			RequestID: "native-request-1", ToolName: "AskUserQuestion", QuestionToken: questionTestToken,
 			QuestionUserID: "alice", Questions: questions, Resolved: make(chan struct{}),
@@ -56,6 +58,9 @@ func TestQuestionCallback_RejectsUnboundStaleWrongIndexAndWrongOwner(t *testing.
 			if rec.calls != 0 || state.pending == nil || len(state.pending.Answers) != 0 {
 				t.Fatal("invalid callback changed pending state")
 			}
+			if state.currentTurnRecord.question != "original question" {
+				t.Fatal("invalid callback changed the archive")
+			}
 		})
 	}
 }
@@ -76,7 +81,7 @@ func TestQuestionCallback_NoPendingNeverBecomesPrompt(t *testing.T) {
 
 func TestQuestionCallback_ConcurrentDuplicateConsumedOnce(t *testing.T) {
 	e, p, rec := newTestEngine(), &stubPlatformEngine{n: "test"}, &recordingAgentSession{}
-	questionTestState(e, "test:question", rec, testQuestions())
+	state := questionTestState(e, "test:question", rec, testQuestions())
 	var accepted atomic.Int32
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
@@ -94,6 +99,9 @@ func TestQuestionCallback_ConcurrentDuplicateConsumedOnce(t *testing.T) {
 	if accepted.Load() != 1 || rec.calls != 1 {
 		t.Fatalf("accepted=%d calls=%d", accepted.Load(), rec.calls)
 	}
+	if got, want := state.currentTurnRecord.question, "original question\n\nClarification (Alice):\n✅ Which database?: **SQLite**"; got != want {
+		t.Fatalf("archive = %q, want %q", got, want)
+	}
 }
 
 func TestQuestionCallback_MultiQuestionRejectsPreviousCard(t *testing.T) {
@@ -107,6 +115,9 @@ func TestQuestionCallback_MultiQuestionRejectsPreviousCard(t *testing.T) {
 		if ack.Accepted != (i != 1) {
 			t.Fatalf("step %d ack=%#v", i, ack)
 		}
+		if i < 2 && state.currentTurnRecord.question != "original question" {
+			t.Fatal("partial answers must wait for native acceptance")
+		}
 	}
 	if rec.calls != 1 || state.pending != nil {
 		t.Fatal("multi-question response not completed exactly once")
@@ -114,6 +125,9 @@ func TestQuestionCallback_MultiQuestionRejectsPreviousCard(t *testing.T) {
 	answers := rec.lastResult.UpdatedInput["answers"].(map[string]any)
 	if answers["Which database?"] != "PostgreSQL" || answers["Which framework?"] != "Echo" {
 		t.Fatalf("answers=%#v", answers)
+	}
+	if got, want := state.currentTurnRecord.question, "original question\n\nClarification (Alice):\n✅ Which database?: **PostgreSQL**\n✅ Which framework?: **Echo**"; got != want {
+		t.Fatalf("archive = %q, want %q", got, want)
 	}
 }
 
@@ -132,6 +146,9 @@ func TestQuestionCallback_ClosedNativeRequestRejectsAndReleases(t *testing.T) {
 	if state.pending != nil || rec.calls != 0 {
 		t.Fatal("cancelled request not released")
 	}
+	if state.currentTurnRecord.question != "original question" {
+		t.Fatal("expired question changed the archive")
+	}
 	select {
 	case <-pending.Resolved:
 	default:
@@ -147,11 +164,80 @@ func (*questionErrorSession) RespondPermission(string, PermissionResult) error {
 
 func TestQuestionCallback_AgentRejectDoesNotAcknowledgeSuccess(t *testing.T) {
 	e, p := newTestEngine(), &stubPlatformEngine{n: "test"}
-	questionTestState(e, "test:question", &questionErrorSession{}, testQuestions())
+	state := questionTestState(e, "test:question", &questionErrorSession{}, testQuestions())
 	msg := questionTestMessage("test:question", "alice", "askq:"+questionTestToken+":0:1")
 	e.handlePendingPermission(p, msg, msg.Content, "")
 	if ack := <-msg.QuestionResponse; ack.Accepted || ack.Message == "" {
 		t.Fatalf("ack=%#v", ack)
+	}
+	if state.currentTurnRecord.question != "original question" {
+		t.Fatal("failed native response changed the archive")
+	}
+}
+
+type questionHookSession struct {
+	stubAgentSession
+	respond func()
+}
+
+func (s *questionHookSession) RespondPermission(string, PermissionResult) error {
+	s.respond()
+	return nil
+}
+
+func TestQuestionCallback_ArchiveRejectsChangedTurnBinding(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*interactiveState)
+	}{
+		{"message", func(s *interactiveState) { s.currentMessageID = "new-message" }},
+		{"generation", func(s *interactiveState) { s.presentationGeneration++ }},
+		{"session", func(s *interactiveState) { s.agentSession = &stubAgentSession{} }},
+		{"record message", func(s *interactiveState) { s.currentTurnRecord.messageID = "new-message" }},
+		{"record session", func(s *interactiveState) { s.currentTurnRecord.sessionKey = "new-session" }},
+		{"record user", func(s *interactiveState) { s.currentTurnRecord.userID = "bob" }},
+		{"stopped", func(s *interactiveState) { s.stopped = true }},
+		{"recalled", func(s *interactiveState) { s.discardTurnMessageID = s.currentMessageID }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, p := newTestEngine(), &stubPlatformEngine{n: "test"}
+			rec := &questionHookSession{}
+			state := questionTestState(e, "test:question", rec, testQuestions())
+			rec.respond = func() { state.mu.Lock(); defer state.mu.Unlock(); tc.change(state) }
+			msg := questionTestMessage("test:question", "alice", "askq:"+questionTestToken+":0:1")
+			e.handlePendingPermission(p, msg, msg.Content, "")
+			if ack := <-msg.QuestionResponse; !ack.Accepted {
+				t.Fatal("native acceptance itself must be unchanged")
+			}
+			if state.currentTurnRecord.question != "original question" {
+				t.Fatal("late callback changed a replaced or cancelled archive")
+			}
+		})
+	}
+}
+
+func TestQuestionCallback_ArchiveIncludesOnlyStructuredQuestionAndAnswer(t *testing.T) {
+	e, p, rec := newTestEngine(), &stubPlatformEngine{n: "test"}, &recordingAgentSession{}
+	state := questionTestState(e, "test:question", rec, testQuestions())
+	state.pending.ToolInput = map[string]any{"command": "private-command", "token": "secret-token"}
+	msg := questionTestMessage("test:question", "alice", "askq:"+questionTestToken+":0:1")
+	e.handlePendingPermission(p, msg, msg.Content, "")
+	if ack := <-msg.QuestionResponse; !ack.Accepted {
+		t.Fatal("native answer rejected")
+	}
+	if strings.Contains(state.currentTurnRecord.question, "private-command") || strings.Contains(state.currentTurnRecord.question, "secret-token") {
+		t.Fatal("permission metadata leaked into the archive")
+	}
+	state = questionTestState(e, "test:tool-permission", rec, nil)
+	pending := state.pending
+	pending.ToolName = "Bash"
+	pending.ToolInput = map[string]any{"command": "private-command"}
+	permission := &Message{SessionKey: "test:tool-permission", UserID: "alice", Content: "allow", ReplyCtx: "ctx", IsPermissionResponse: true}
+	if !e.handlePendingPermission(p, permission, permission.Content, "") || rec.calls != 2 || state.pending != nil {
+		t.Fatal("ordinary tool permission did not follow its existing response path")
+	}
+	if state.currentTurnRecord.question != "original question" {
+		t.Fatal("ordinary tool permission was archived as a question")
 	}
 }
 

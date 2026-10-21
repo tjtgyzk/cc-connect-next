@@ -843,18 +843,19 @@ type modelSwitchState struct {
 
 // pendingPermission represents a permission request waiting for user response.
 type pendingPermission struct {
-	RequestID       string
-	ToolName        string
-	ToolInput       map[string]any
-	InputPreview    string
-	Questions       []UserQuestion  // non-nil for AskUserQuestion
-	Answers         map[int]string  // collected answers keyed by question index
-	CurrentQuestion int             // index of the question currently being asked
-	QuestionUserID  string          // owner of the native question turn
-	QuestionToken   string          // random binding for this request's card callbacks
-	PermissionDone  <-chan struct{} // agent request cancellation/completion
-	Resolved        chan struct{}   // closed when user responds
-	resolveOnce     sync.Once
+	RequestID               string
+	ToolName                string
+	ToolInput               map[string]any
+	InputPreview            string
+	Questions               []UserQuestion  // non-nil for AskUserQuestion
+	Answers                 map[int]string  // collected answers keyed by question index
+	CurrentQuestion         int             // index of the question currently being asked
+	QuestionUserID          string          // owner of the native question turn
+	QuestionToken           string          // random binding for this request's card callbacks
+	questionResponseClaimed bool            // guarded by interactiveState.mu; native write must finish before consuming completion
+	PermissionDone          <-chan struct{} // agent request cancellation/completion
+	Resolved                chan struct{}   // closed when user responds
+	resolveOnce             sync.Once
 }
 
 func (s *interactiveState) stopSignal() <-chan struct{} {
@@ -5896,7 +5897,7 @@ func (t *turnProcessor) run() {
 			state.platform = h.platform
 			state.replyCtx = h.replyCtx
 			state.currentMessageID = h.messageID
-			state.currentTurnRecord = h.turnRecordInput
+			state.currentTurnRecord = e.appendSteeredTurnRecord(state.currentTurnRecord, h.turnRecordInput)
 			state.fromVoice = h.fromVoice
 			state.currentUserID = h.userID
 			state.currentTurnUserMessageTimeMs = h.userMessageTimeMs
@@ -7572,11 +7573,28 @@ func (permission *turnPermission) handle() turnReadControl {
 		slog.Info("permission resolved", "request_id", event.RequestID)
 	case <-pending.PermissionDone:
 		state.mu.Lock()
+		questionResponseClaimed := pending.questionResponseClaimed
 		if state.pending == pending {
 			state.pending = nil
 		}
 		state.mu.Unlock()
-		pending.resolve()
+		if questionResponseClaimed {
+			// Native request completion can race ahead of RespondPermission's
+			// success acknowledgement. Let the claimed callback finish its audit
+			// append before consuming a buffered final answer, while retaining
+			// normal stop/cancellation responsiveness.
+			select {
+			case <-pending.Resolved:
+			case <-silentCancelCh:
+				permissionInterrupted = true
+			case <-stopCh:
+				permissionInterrupted = true
+			case <-e.ctx.Done():
+				permissionInterrupted = true
+			}
+		} else {
+			pending.resolve()
+		}
 	case <-silentCancelCh:
 		permissionInterrupted = true
 	case <-stopCh:

@@ -439,12 +439,12 @@ func (e *Engine) platformRuntimeCapabilities(platform Platform, status PlatformS
 		if !recorder.TurnRecordingEnabled() {
 			recordingAvailability = unavailable("Turn recording is disabled; enable turn_record_enabled and configure the target Bitable.", "回合记录未启用；需启用 turn_record_enabled 并配置目标多维表格。")
 		} else {
-			recordingAvailability = conditional("Appends one audit row per delivered turn to the configured Feishu Bitable; asynchronous and best-effort.", "每个成功交付的回合向配置的飞书多维表格追加一行审计记录；异步且尽力而为。")
+			recordingAvailability = conditional("Records delivered turns in the configured Bitable, either as individual rows or as updates to a topic record according to turn_record_mode; asynchronous and best-effort.", "按 turn_record_mode 将成功交付的回合逐轮归档或更新话题主记录；异步且尽力而为。")
 		}
 	}
 	recording := feature("turn_recording",
-		"Append one audit row (time, nickname, user_id, group name, model, question, answer) per delivered turn to a Feishu Bitable. Asynchronous and best-effort; never blocks, delays, or fails the user turn.",
-		"每个成功交付的回合向飞书多维表格追加一行审计记录（时间、昵称、user_id、群名、模型、问题、答案）。异步且尽力而为，绝不阻塞、延迟或影响用户回合。",
+		"Archive delivered questions and answers with identity, timing and Trace metadata. turn_record_mode selects individual turn rows or one topic record with full conversation and accumulated metrics. Asynchronous and best-effort; recording failure never fails or replays the user turn.",
+		"归档成功交付的问答及身份、耗时和 Trace 信息。turn_record_mode 决定逐轮记录，或更新保留完整对话及累计指标的话题主记录。异步且尽力而为，归档失败不会导致用户回合失败或重跑。",
 		recordingAvailability, CapabilityFallback{Mode: "skip", Description: "Keep the delivered answer; drop the record on failure without replaying the turn.", DescriptionZH: "保留已投递回答；失败时丢弃该记录，不重跑回合。"})
 	recording.Permission = CapabilityPermissionConditional
 	readOnly := false

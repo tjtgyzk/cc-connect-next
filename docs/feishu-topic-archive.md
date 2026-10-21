@@ -1,0 +1,13 @@
+# Feishu topic archives
+
+With `turn_record_mode = "topic"`, one local conversation within an explicit Feishu topic owns one Bitable main record. Follow-up turns update that record. `/new` starts a separate record; provider resets and service restarts preserve the record identity. Messages outside a topic remain independent records.
+
+The main record keeps the original question and requester, the latest answer and Trace link, every delivered question and answer, and all per-turn Trace links. Turn count, elapsed processing time and tool calls are accumulated from unique completed turns. Time between user messages is excluded; time waiting for clarification inside a running turn is included. A steered message remains part of its original turn, with its sender and question text retained. Accepted native clarification questions and selections are also retained within that turn; expired, rejected and duplicate submissions are excluded.
+
+The configured text columns `task_id`, `conversation`, `trace_history`, `archive_state`, and `record_kind`, plus numeric `turn_count`, are required. Existing field mappings retain their types. `archive_state` contains the versioned canonical per-turn journal; hide it and `task_id` from normal views, but retain them for recovery. Filter the main view and dashboard to exclude `record_kind = 历史明细`, allowing any legacy records to remain visible during a rollback.
+
+One recorder worker serializes updates. Each write first reads the existing task record; native session/turn IDs (or the triggering message ID) identify retries. An identical retry does not add a turn or accumulate metrics. Conflicting retries, duplicate task rows, invalid state, unexpected field types, and text exceeding 100,000 bytes fail without overwriting existing history. Multiple service instances must not write to the same topic concurrently. Recording is best effort and does not fail or replay the user's task.
+
+Historical consolidation requires verified Trace-to-turn and persisted local-session mappings. Snapshot source records before applying changes. Update the first record in each confirmed task with the canonical journal and aggregates; mark the other source records `历史明细` and leave their task IDs empty. Keep unmapped records separate. No source rows are deleted. Validate stored round counts, transcript contents, Trace links, totals and unique task IDs before enabling topic mode.
+
+Regression coverage must include multi-turn aggregation, independent topics and `/new`, native resets/restarts, queued and steered messages, identical and conflicting retries, uncertain write outcomes, invalid state and size limits. Deployment preserves the native clarification and notification settings and waits for the running service to be idle.

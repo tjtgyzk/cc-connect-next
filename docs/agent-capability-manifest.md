@@ -105,4 +105,4 @@ Dynamic descriptions and runtime errors receive aggressive credential, long-blob
 
 The exhaustive generated configuration reference remains available at [configuration.md](configuration.md).
 
-`turn_recording` reports disabled or conditional availability without exposing the destination. When enabled, it asynchronously appends one audit row (time, nickname, user_id, group name, model, question, answer) per delivered turn to a configured Feishu Bitable. It reports write side effects and is best-effort; recording failure never fails the user turn.
+`turn_recording` reports disabled or conditional availability without exposing the destination. When enabled, it asynchronously archives delivered turns to a configured Feishu Bitable. `turn_record_mode` selects individual rows (`turn`) or an isolated topic record with complete conversation, per-turn Trace links and accumulated metrics (`topic`). See [topic archive semantics](feishu-topic-archive.md). It reports write side effects and is best-effort; recording failure never fails the user turn.

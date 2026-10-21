@@ -28,18 +28,24 @@ const (
 
 // turnRecordFields maps logical columns to the actual Bitable column names.
 type turnRecordFields struct {
-	Time      string
-	Name      string
-	UserID    string
-	Chat      string
-	Model     string
-	Question  string
-	Answer    string
-	Requester string
-	Trace     string
-	Duration  string
-	ToolCount string
-	Summary   string
+	Time         string
+	Name         string
+	UserID       string
+	Chat         string
+	Model        string
+	Question     string
+	Answer       string
+	Requester    string
+	Trace        string
+	Duration     string
+	ToolCount    string
+	Summary      string
+	TaskID       string
+	TurnCount    string
+	Conversation string
+	TraceHistory string
+	ArchiveState string
+	RecordKind   string
 }
 
 func defaultTurnRecordFields() turnRecordFields {
@@ -56,6 +62,7 @@ func defaultTurnRecordFields() turnRecordFields {
 
 type turnRecordConfig struct {
 	enabled           bool
+	mode              string
 	wikiToken         string
 	appToken          string
 	tableID           string
@@ -67,9 +74,17 @@ type turnRecordConfig struct {
 // parseTurnRecordOptions validates and builds the turn-recording config.
 func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 	cfg := &turnRecordConfig{
+		mode:      turnRecordModeTurn,
 		wikiToken: defaultTurnRecordWikiToken,
 		tableID:   defaultTurnRecordTableID,
 		fields:    defaultTurnRecordFields(),
+	}
+	if raw, ok := opts["turn_record_mode"]; ok {
+		mode, ok := raw.(string)
+		if !ok || (mode != turnRecordModeTurn && mode != turnRecordModeTopic) {
+			return nil, fmt.Errorf("turn_record_mode must be turn or topic")
+		}
+		cfg.mode = mode
 	}
 	if raw, ok := opts["turn_record_enabled"]; ok {
 		v, ok := raw.(bool)
@@ -100,6 +115,13 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 				*target = strings.TrimSpace(v)
 			}
 		}
+		for _, key := range []string{"time", "name", "user_id", "chat", "model", "question", "answer"} {
+			if value, exists := m[key]; exists {
+				if _, ok := value.(string); !ok {
+					return nil, fmt.Errorf("turn_record_fields.%s must be a string", key)
+				}
+			}
+		}
 		set(&cfg.fields.Time, "time")
 		set(&cfg.fields.Name, "name")
 		set(&cfg.fields.UserID, "user_id")
@@ -111,12 +133,18 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 			"requester": &cfg.fields.Requester, "trace": &cfg.fields.Trace,
 			"duration": &cfg.fields.Duration, "tool_count": &cfg.fields.ToolCount,
 			"summary": &cfg.fields.Summary,
+			"task_id": &cfg.fields.TaskID, "turn_count": &cfg.fields.TurnCount,
+			"conversation": &cfg.fields.Conversation, "trace_history": &cfg.fields.TraceHistory,
+			"archive_state": &cfg.fields.ArchiveState, "record_kind": &cfg.fields.RecordKind,
 		}
 		used := map[string]bool{}
 		for _, column := range []string{cfg.fields.Time, cfg.fields.Name, cfg.fields.UserID, cfg.fields.Chat, cfg.fields.Model, cfg.fields.Question, cfg.fields.Answer} {
+			if used[column] {
+				return nil, fmt.Errorf("turn_record_fields must use distinct columns")
+			}
 			used[column] = true
 		}
-		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary"} {
+		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary", "task_id", "turn_count", "conversation", "trace_history", "archive_state", "record_kind"} {
 			if raw, ok := m[key]; ok {
 				column, ok := raw.(string)
 				if !ok {
@@ -131,6 +159,13 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 				}
 				used[column] = true
 				*optional[key] = column
+			}
+		}
+	}
+	if cfg.mode == turnRecordModeTopic {
+		for key, value := range map[string]string{"task_id": cfg.fields.TaskID, "turn_count": cfg.fields.TurnCount, "conversation": cfg.fields.Conversation, "trace_history": cfg.fields.TraceHistory, "archive_state": cfg.fields.ArchiveState, "record_kind": cfg.fields.RecordKind} {
+			if value == "" {
+				return nil, fmt.Errorf("turn_record_mode topic requires turn_record_fields.%s", key)
 			}
 		}
 	}
@@ -154,6 +189,7 @@ type turnRecorder struct {
 
 	appTokenMu sync.Mutex
 	appToken   string
+	writeMu    sync.Mutex // one read/merge/write at a time within this recorder; not a cross-process CAS
 }
 
 func newTurnRecorder(cfg *turnRecordConfig) *turnRecorder {
@@ -253,6 +289,12 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 	}
 	if userID == "" {
 		userID = rec.FeishuUserID
+	}
+	if r.cfg.mode == turnRecordModeTopic {
+		if err := r.writeTopic(ctx, p, appToken, topicArchiveTurn{Record: rec, DisplayName: name, TenantUserID: userID}); err != nil {
+			slog.Warn(p.tag()+": topic turn record write failed", "error", err, "message_id", rec.MessageID)
+		}
+		return
 	}
 
 	f := r.cfg.fields

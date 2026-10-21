@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -135,6 +136,12 @@ func TestTurnRecording_OnlySuccessfulVisibleTerminalAnswers(t *testing.T) {
 			if rec.MessageID != "trigger-message" || rec.SessionKey != key {
 				t.Fatalf("routing fields wrong: %+v", rec)
 			}
+			if rec.ConversationID == "" || rec.ConversationID != e.turnConversationID(session, key) {
+				t.Fatalf("missing processing-session conversation identity: %+v", rec)
+			}
+			if rec.Language != LangEnglish {
+				t.Fatalf("archive language = %q, want English", rec.Language)
+			}
 			if rec.At.IsZero() {
 				t.Fatalf("timestamp not set: %+v", rec)
 			}
@@ -214,7 +221,7 @@ func TestTurnRecording_PendingDrainKeepsRawQuestionAndSender(t *testing.T) {
 	assertTurnRecordInput(t, rows[0], key, "queued", "bob", "Bob", "Queue", "raw question", "Answer B")
 }
 
-func TestTurnRecording_SteerAdoptsLatestRawQuestionAndSender(t *testing.T) {
+func TestTurnRecording_SteerPreservesOriginalAndFollowupRawQuestions(t *testing.T) {
 	for _, content := range []string{"  updated question  ", "/ps updated question"} {
 		t.Run(strings.TrimSpace(content), func(t *testing.T) {
 			p := newTurnRecordPlatform()
@@ -239,9 +246,105 @@ func TestTurnRecording_SteerAdoptsLatestRawQuestionAndSender(t *testing.T) {
 			if len(rows) != 1 {
 				t.Fatalf("one native turn must create one row: %+v", rows)
 			}
-			assertTurnRecordInput(t, rows[0], key, "message-B", "bob", "Bob", "Group B", content, "Answer B")
+			question := "Question A\n\nFollow-up question (Bob):\n" + content
+			assertTurnRecordInput(t, rows[0], key, "message-B", "alice", "Alice", "Group A", question, "Answer B")
 			assertTurnRecordMetadata(t, rows[0], "native-steer-thread", "native-original-turn", 2, startedBefore, firstSendObserved)
 		})
+	}
+}
+
+func TestTurnRecording_ConsecutiveSteersPreserveEveryRawQuestion(t *testing.T) {
+	p := newTurnRecordPlatform()
+	sess := newSteerableSession("record-multi-steer")
+	e := NewEngine("test", &controllableAgent{nextSession: sess}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangChinese)
+	t.Cleanup(func() { _ = e.Stop() })
+	e.SetBusyMessageMode(BusyMessageModeSteer)
+	e.AddAlias("short-question", "PRIVATE enriched instruction")
+	key := "test:multi-steer-group"
+	e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: "message-A", UserID: "alice", UserName: "Alice", ChatName: "Original group", Content: "  原始问题  ", ReplyCtx: "ctx-A"})
+	waitForSteer(t, "initial native send", func() bool { return len(sess.getSendCalls()) == 1 })
+	for i, input := range []struct{ userID, userName, content string }{{"bob", "Bob", "short-question"}, {"carol", "", "  补充时间范围  "}} {
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: fmt.Sprintf("message-%d", i), UserID: input.userID, UserName: input.userName, ChatName: "Changed group", Content: input.content, ExtraContent: "PRIVATE quoted context", ReplyCtx: "ctx-" + input.userID})
+	}
+	sess.events <- Event{Type: EventResult, Content: "完整回答", Done: true}
+	waitForSteer(t, "steered completion", func() bool { return !e.sessions.GetOrCreateActive(key).Busy() })
+	rows := p.snapshot()
+	if len(rows) != 1 {
+		t.Fatalf("one native turn must emit one record, got %+v", rows)
+	}
+	if want := "  原始问题  \n\n追加问题（Bob）：\nshort-question\n\n追加问题（carol）：\n  补充时间范围  "; rows[0].Question != want {
+		t.Fatalf("steer lost raw question or exposed enriched input: got %q, want %q", rows[0].Question, want)
+	}
+	if len(sess.getSteerCalls()) != 2 || rows[0].MessageID != "message-1" {
+		t.Fatalf("steer routing changed: calls=%v record=%+v", sess.getSteerCalls(), rows[0])
+	}
+	if rows[0].UserID != "alice" || rows[0].UserName != "Alice" || rows[0].ChatName != "Original group" {
+		t.Fatalf("steer changed the original archive requester: %+v", rows[0])
+	}
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[key]
+	e.interactiveMu.Unlock()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.currentUserID != "carol" || state.replyCtx != "ctx-carol" || state.currentMessageID != "message-1" {
+		t.Fatalf("archive ownership must not alter runtime authorization or delivery: user=%q reply=%v message=%q", state.currentUserID, state.replyCtx, state.currentMessageID)
+	}
+}
+
+func TestTurnRecording_ConversationIDSurvivesRestartAndNativeReset(t *testing.T) {
+	store := filepath.Join(t.TempDir(), "sessions.json")
+	e := NewEngine("project", &stubAgent{}, nil, store, LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	key := "test:group:topic"
+	session := e.sessions.GetOrCreateActive(key)
+	before := e.turnConversationID(session, key)
+	if len(before) != sha256.Size*2 || strings.Contains(before, "project") || strings.Contains(before, key) {
+		t.Fatalf("conversation ID must be an opaque SHA-256 digest: %q", before)
+	}
+	session.SetAgentInfo("native-first", "test-agent", "renamed")
+	session.SetActiveProvider("other-provider")
+	session.SetAgentSessionID("native-replaced", "test-agent")
+	session.ClearHistory()
+	if after := e.turnConversationID(session, key); after != before {
+		t.Fatalf("native reset changed local conversation identity: %q => %q", before, after)
+	}
+	e.sessions.Save()
+	restored := NewSessionManager(store).GetOrCreateActive(key)
+	if after := e.turnConversationID(restored, key); after != before {
+		t.Fatalf("restart changed conversation identity: %q => %q", before, after)
+	}
+	for name, id := range map[string]string{
+		"different topic":   e.turnConversationID(session, key+"-other"),
+		"different project": (&Engine{name: "other-project"}).turnConversationID(session, key),
+		"new local session": e.turnConversationID(e.sessions.NewSession(key, "new"), key),
+		"recreated store":   e.turnConversationID(&Session{ID: session.ID, CreatedAt: session.CreatedAt.Add(time.Second)}, key),
+	} {
+		if id == before || id == "" {
+			t.Errorf("%s must have a different identity: %q", name, id)
+		}
+	}
+	if e.turnConversationID(nil, key) != "" || e.turnConversationID(&Session{}, key) != "" {
+		t.Fatal("untracked session must not invent a conversation identity")
+	}
+}
+
+func TestTurnRecording_UsesProcessingSessionAfterActiveSessionChanges(t *testing.T) {
+	p := newTurnRecordPlatform()
+	e := NewEngine("project", &stubAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
+	key := "test:group:topic"
+	original := e.sessions.GetOrCreateActive(key)
+	want := e.turnConversationID(original, key)
+	sess := newControllableSession("native-original")
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "reply", currentSessionKey: key,
+		currentTurnRecord: turnRecordInput{userID: "alice", question: "original question", sessionKey: key, messageID: "original-message"}}
+	e.interactiveStates[key] = state
+	successor := e.sessions.NewSession(key, "successor")
+	sess.events <- Event{Type: EventResult, Content: "original answer", Done: true}
+	e.processInteractiveEvents(state, original, e.sessions, key, "original-message", time.Now(), nil, nil, state.replyCtx)
+	rows := p.snapshot()
+	if len(rows) != 1 || rows[0].ConversationID != want || rows[0].ConversationID == e.turnConversationID(successor, key) {
+		t.Fatalf("old result adopted successor conversation identity: %+v", rows)
 	}
 }
 
@@ -511,9 +614,108 @@ func TestTurnRecording_HITLWaitStaysInOriginalNativeTurn(t *testing.T) {
 	if len(rows) != 1 || turnRecordingSendCount(sess) != 1 {
 		t.Fatalf("HITL must continue one turn: records=%d sends=%d", len(rows), turnRecordingSendCount(sess))
 	}
-	assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "", "", "check service", "stg checked")
+	assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "", "", "check service\n\nClarification (alice):\n✅ prod or stg?: **stg**", "stg checked")
 	assertTurnRecordMetadata(t, rows[0], "hitl-native-thread", "same-native-turn", 2, startedBefore, sendObserved)
 	if rows[0].At.Before(answerAt) || rows[0].Duration < rows[0].At.Sub(answerAt) {
 		t.Fatal("HITL waiting interval was excluded from the original turn duration")
+	}
+}
+
+// Native app-server requests can close PermissionDone and queue the resumed
+// result before RespondPermission returns its successful write acknowledgement.
+type questionCompletionRaceSession struct {
+	*queuingAgentSession
+	permissionDone  chan struct{}
+	responseEntered chan struct{}
+	responseRelease chan struct{}
+}
+
+func (s *questionCompletionRaceSession) Alive() bool {
+	select {
+	case <-s.closed:
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *questionCompletionRaceSession) RespondPermission(string, PermissionResult) error {
+	close(s.permissionDone)
+	s.events <- Event{Type: EventResult, Content: "stg checked", SessionID: "native-session", TurnID: "same-turn", Done: true}
+	close(s.responseEntered)
+	<-s.responseRelease
+	return nil
+}
+
+func TestTurnRecording_HITLArchiveWaitsForNativeAcceptance(t *testing.T) {
+	for _, stop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stop=%t", stop), func(t *testing.T) {
+			p := newTurnRecordPlatform()
+			sess := &questionCompletionRaceSession{
+				queuingAgentSession: newQueuingSession("hitl-race"), permissionDone: make(chan struct{}),
+				responseEntered: make(chan struct{}), responseRelease: make(chan struct{}),
+			}
+			e := NewEngine("test", &controllableAgent{nextSession: sess}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangEnglish)
+			t.Cleanup(func() { _ = e.Stop() })
+			var release sync.Once
+			t.Cleanup(func() { release.Do(func() { close(sess.responseRelease) }) })
+			key := "test:hitl-completion-race"
+			e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: "original-question", UserID: "alice", UserName: "Alice", Content: "check service", ReplyCtx: "ctx"})
+			waitForSteer(t, "initial send", func() bool { return turnRecordingSendCount(sess.queuingAgentSession) == 1 })
+			sess.events <- Event{Type: EventPermissionRequest, RequestID: "environment-request", ToolName: "AskUserQuestion", PermissionDone: sess.permissionDone,
+				Questions: []UserQuestion{{ID: "environment", Question: "prod or stg?", Options: []UserQuestionOption{{Label: "prod"}, {Label: "stg"}}}}}
+			var action string
+			waitForSteer(t, "question card", func() bool {
+				e.interactiveMu.Lock()
+				state := e.interactiveStates[key]
+				e.interactiveMu.Unlock()
+				if state == nil {
+					return false
+				}
+				state.mu.Lock()
+				defer state.mu.Unlock()
+				if state.pending == nil {
+					return false
+				}
+				action = fmt.Sprintf("askq:%s:0:2", state.pending.QuestionToken)
+				return true
+			})
+			msg := questionTestMessage(key, "alice", action)
+			callbackDone := make(chan struct{})
+			go func() { e.ReceiveMessage(p, msg); close(callbackDone) }()
+			select {
+			case <-sess.responseEntered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("native response was not submitted")
+			}
+			// Give the reader a chance to consume PermissionDone and the buffered
+			// result; neither may produce an archive before the write succeeds.
+			time.Sleep(80 * time.Millisecond)
+			if len(p.snapshot()) != 0 || !e.sessions.GetOrCreateActive(key).Busy() {
+				t.Fatal("final result overtook the accepted-answer archive append")
+			}
+			if stop {
+				e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "alice", Content: "/stop", ReplyCtx: "ctx"})
+				waitForSteer(t, "stop remains responsive", func() bool { return !e.sessions.GetOrCreateActive(key).Busy() })
+			}
+			release.Do(func() { close(sess.responseRelease) })
+			select {
+			case <-callbackDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("callback did not finish")
+			}
+			waitForSteer(t, "turn completion", func() bool { return !e.sessions.GetOrCreateActive(key).Busy() })
+			rows := p.snapshot()
+			if stop {
+				if len(rows) != 0 {
+					t.Fatalf("stopped turn was archived: %+v", rows)
+				}
+				return
+			}
+			if len(rows) != 1 || turnRecordingSendCount(sess.queuingAgentSession) != 1 {
+				t.Fatalf("HITL split or lost the turn: %+v", rows)
+			}
+			assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "Alice", "", "check service\n\nClarification (Alice):\n✅ prod or stg?: **stg**", "stg checked")
+		})
 	}
 }

@@ -4153,7 +4153,7 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 
 ### `projects.platforms.options.turn_record_enabled` — `feishu, lark`
 
-开启后，每个成功交付的回合向飞书多维表格追加一行（时间、昵称、user_id、群名、模型、问题、答案）。记录为尽力而为，绝不阻塞或影响用户回合。
+开启成功交付回合的多维表格归档。turn_record_mode 默认每轮一行，topic 模式按隔离话题/session 维护一条主记录。记录为尽力而为，绝不阻塞或影响用户回合。
 
 - 来源：`toml`
 - 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
@@ -4168,7 +4168,7 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 
 ### `projects.platforms.options.turn_record_fields` — `feishu, lark`
 
-将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。
+将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。 topic 模式另需 task_id（文本/type 1）、turn_count（数字/type 2）、conversation、trace_history、archive_state、record_kind（文本/type 1）映射；archive_state 保存可重算的带版本 JSON 原始归档数据，task_id 与 archive_state 可在视图隐藏但须可写；record_kind 固定写入“主记录”。
 
 - 来源：`toml`
 - 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
@@ -4178,7 +4178,23 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 - 默认值：`built-in seven Chinese column names; enrichment mappings empty`
 - 默认值来源：`builtin`
 - 生效方式：`restart`
-- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要" }`
+- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要", task_id = "任务ID", turn_count = "交互轮数", conversation = "完整对话", trace_history = "历史Trace", archive_state = "归档数据", record_kind = "归档类型" }`
+
+### `projects.platforms.options.turn_record_mode` — `feishu, lark`
+
+选择 turn（每次交付答复一行）或 topic（每个隔离话题及本地 session 一条主记录，/new 新建）。普通无话题消息保持独立。topic 保留首次问题和提问人、最新答案与时间、完整有序多轮对话及 Trace 历史，累计耗时与工具次数；写前验证原生字段类型及带版本的归档状态，按原生 session/turn ID 或消息 ID 跨重启去重，冲突回合及重复任务 ID 拒绝覆盖。每张表只部署一个归档写入实例，不提供跨进程 CAS；队列仍是尽力而为，文本或状态超过 100000 字节时拒绝截断写入，已有记录不自动迁移。
+
+- 来源：`toml`
+- 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
+- 作用域：`platform` (`feishu, lark`)
+- 类型：`string`
+- 要求：`可选`
+- 默认值：`turn`
+- 默认值来源：`builtin`
+- 生效方式：`restart`
+- 依赖: `topic requires turn_record_fields.task_id, turn_count, conversation, trace_history, archive_state and record_kind`
+- 允许值: `turn`, `topic`
+- 示例: `turn_record_mode = "turn"`
 
 ### `projects.platforms.options.turn_record_table_id` — `feishu, lark`
 
