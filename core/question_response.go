@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func isQuestionResponse(msg *Message, content string) bool {
@@ -48,13 +49,22 @@ func (e *Engine) rejectQuestionResponse(msg *Message) {
 // handleQuestionResponse claims a question exactly once under state.mu. No
 // platform or agent call is made while holding the state lock.
 func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string, state *interactiveState, pending *pendingPermission) bool {
+	receivedAt := time.Now()
 	callback := isQuestionResponse(msg, content)
 	if !callback && strings.TrimSpace(content) == "" {
 		return false
 	}
 
 	state.mu.Lock()
-	if state.pending != pending || requestDone(pending.PermissionDone) || state.stopped {
+	if pending.responseClaimed {
+		state.mu.Unlock()
+		if !callback {
+			return false // a follow-up during the native write keeps its normal queue/steer path
+		}
+		e.rejectQuestionResponse(msg)
+		return true
+	}
+	if state.pending != pending || !state.permissionBindingValidLocked(pending) || requestDone(pending.PermissionDone) || state.stopped {
 		if state.pending == pending {
 			state.pending = nil
 			pending.resolve()
@@ -104,22 +114,25 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 	recordInput := state.currentTurnRecord
 	messageID := state.currentMessageID
 	generation := state.presentationGeneration
+	state.pausePermissionWaitLocked(pending, receivedAt)
 	if more {
+		pending.waitPromptDelivered = false
 		pending.CurrentQuestion = idx + 1
 	} else {
 		updatedInput = buildAskQuestionResponse(pending.ToolInput, pending.Questions, pending.Answers)
-		pending.questionResponseClaimed = true
-		state.pending = nil
+		pending.responseClaimed = true
+		pending.responseDone = make(chan struct{})
 	}
 	state.mu.Unlock()
 
 	if !more {
-		defer pending.resolve()
 		if agentSession == nil {
+			state.finishPermissionResponse(pending, agentSession, false, false, time.Now())
 			e.rejectQuestionResponse(msg)
 			return true
 		}
 		if err := agentSession.RespondPermission(pending.RequestID, PermissionResult{Behavior: "allow", UpdatedInput: updatedInput}); err != nil {
+			state.finishPermissionResponse(pending, agentSession, false, false, time.Now())
 			slog.Error("failed to send question response", "error", err)
 			e.rejectQuestionResponse(msg)
 			if msg.QuestionResponse == nil {
@@ -127,7 +140,9 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 			}
 			return true
 		}
+		acceptedAt := time.Now()
 		e.recordAcceptedQuestion(state, agentSession, recordInput, messageID, generation, pending, msg)
+		state.finishPermissionResponse(pending, agentSession, true, false, acceptedAt)
 	}
 	acknowledgeQuestion(msg, QuestionResponseResult{Accepted: true, Question: q.Question, Answer: answer})
 	// A callback-aware platform updates the original card after acknowledgement.
@@ -135,7 +150,9 @@ func (e *Engine) handleQuestionResponse(p Platform, msg *Message, content string
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgQuestionAnswered), q.Question, answer))
 	}
 	if more {
-		e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, idx+1, pending.QuestionToken)
+		if err := e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, idx+1, pending.QuestionToken); err == nil {
+			state.startPermissionWait(pending, time.Now())
+		}
 	}
 	return true
 }

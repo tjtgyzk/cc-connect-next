@@ -181,6 +181,9 @@ func TestTurnRecording_QueuedTurnKeepsRawQuestionAndSender(t *testing.T) {
 	// B starts only after A is delivered; its earlier time in the queue is not
 	// charged to B, and A's tool counter/turn identity cannot leak into B.
 	assertTurnRecordMetadata(t, rows[1], "native-thread", "native-turn-B", 2, rows[0].At, secondSendObserved)
+	if rows[0].UserWaitTiming != "measured" || rows[1].UserWaitTiming != "measured" || rows[1].UserWaitDuration != 0 {
+		t.Fatal("queued turn did not get a fresh measured user-wait clock")
+	}
 	sess.sendMu.Lock()
 	queuedPrompt := sess.sendCalls[1]
 	sess.sendMu.Unlock()
@@ -199,7 +202,7 @@ func TestTurnRecording_PendingDrainKeepsRawQuestionAndSender(t *testing.T) {
 	if !session.TryLock() {
 		t.Fatal("could not lock idle session")
 	}
-	state := &interactiveState{agentSession: sess, platform: p, currentTurnRecord: turnRecordInput{userID: "old", messageID: "old", question: "old"}}
+	state := &interactiveState{agentSession: sess, platform: p, currentTurnUserWait: &turnUserWait{duration: time.Minute}, currentTurnRecord: turnRecordInput{userID: "old", messageID: "old", question: "old"}}
 	e.interactiveStates[key] = state
 	e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", MessageID: "queued", UserID: "bob", UserName: "Bob", ChatName: "Queue", Content: "raw question", ExtraContent: "quote", ReplyCtx: "ctx"})
 	done := make(chan bool, 1)
@@ -219,6 +222,9 @@ func TestTurnRecording_PendingDrainKeepsRawQuestionAndSender(t *testing.T) {
 		t.Fatalf("expected one row, got %+v", rows)
 	}
 	assertTurnRecordInput(t, rows[0], key, "queued", "bob", "Bob", "Queue", "raw question", "Answer B")
+	if rows[0].UserWaitTiming != "measured" || rows[0].UserWaitDuration != 0 {
+		t.Fatal("pending drain inherited the previous native turn wait")
+	}
 }
 
 func TestTurnRecording_SteerPreservesOriginalAndFollowupRawQuestions(t *testing.T) {

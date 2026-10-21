@@ -35,24 +35,26 @@ type DirectUserSender interface {
 // external audit/archival. It is emitted only after a successful, visible
 // final answer.
 type TurnRecord struct {
-	At             time.Time // successful terminal delivery time, before post-delivery hooks/archival
-	UserID         string    // platform-scoped sender id (Feishu open_id)
-	UserName       string    // human-readable display name (nickname)
-	FeishuUserID   string    // Feishu tenant user_id (optional; may be empty)
-	ChatName       string    // group/chat name (empty for direct messages)
-	Model          string    // model used for this turn (optional)
-	SessionKey     string
-	ConversationID string        // opaque local conversation identity; stable across native session resets and process restarts
-	Language       Language      // effective language for archive presentation
-	Question       string        // original question, accepted steers and structured clarifications; excludes prompt enrichment
-	Answer         string        // final visible answer
-	MessageID      string        // trigger message id
-	Summary        string        // bounded task title derived from the original question
-	Duration       time.Duration // processing start through terminal delivery, including HITL; zero if unknown
-	ToolCount      int           // tool-use events observed during this native turn
-	AgentSessionID string        // native ID from the terminal event; never inferred from mutable session state
-	AgentTurnID    string        // native turn ID from the terminal event, when provided
-	TraceURL       string        // optional verified trace URL; empty when no exporter mapping is configured
+	At               time.Time // successful terminal delivery time, before post-delivery hooks/archival
+	UserID           string    // platform-scoped sender id (Feishu open_id)
+	UserName         string    // human-readable display name (nickname)
+	FeishuUserID     string    // Feishu tenant user_id (optional; may be empty)
+	ChatName         string    // group/chat name (empty for direct messages)
+	Model            string    // model used for this turn (optional)
+	SessionKey       string
+	ConversationID   string        // opaque local conversation identity; stable across native session resets and process restarts
+	Language         Language      // effective language for archive presentation
+	Question         string        // original question, accepted steers and structured clarifications; excludes prompt enrichment
+	Answer           string        // final visible answer
+	MessageID        string        // trigger message id
+	Summary          string        // bounded task title derived from the original question
+	Duration         time.Duration // processing start through terminal delivery, including HITL; zero if unknown
+	UserWaitDuration time.Duration `json:",omitempty"` // confirmed time awaiting an actionable user question or manual approval
+	UserWaitTiming   string        `json:",omitempty"` // measured, reconstructed, or empty when historical timing is unknown
+	ToolCount        int           // tool-use events observed during this native turn
+	AgentSessionID   string        // native ID from the terminal event; never inferred from mutable session state
+	AgentTurnID      string        // native turn ID from the terminal event, when provided
+	TraceURL         string        // optional verified trace URL; empty when no exporter mapping is configured
 }
 
 // TurnRecorder is an opt-in capability that persists each delivered turn to an

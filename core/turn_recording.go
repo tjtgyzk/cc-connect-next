@@ -92,6 +92,10 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 
 	state.mu.Lock()
 	input := state.currentTurnRecord
+	waitDuration, waitTiming := time.Duration(0), ""
+	if state.currentTurnUserWait != nil {
+		waitDuration, waitTiming = state.currentTurnUserWait.duration, "measured"
+	}
 	state.mu.Unlock()
 
 	// An empty question is valid for image/file-only inputs. Require the
@@ -107,22 +111,29 @@ func (completion *turnCompletion) recordTurn(response preparedTurnResponse) {
 	}
 
 	record := TurnRecord{
-		At:             completion.deliveredAt,
-		UserID:         input.userID,
-		UserName:       input.userName,
-		ChatName:       input.chatName,
-		Model:          t.engine.turnModel(state),
-		SessionKey:     input.sessionKey,
-		ConversationID: t.engine.turnConversationID(t.session, input.sessionKey),
-		Language:       t.engine.i18n.CurrentLang(),
-		Question:       input.question,
-		Answer:         response.base,
-		MessageID:      completion.msgID,
-		Summary:        summary,
-		Duration:       completedTurnDuration(completion.turnStart, completion.deliveredAt),
-		ToolCount:      completion.toolCount,
-		AgentSessionID: completion.event.SessionID,
-		AgentTurnID:    completion.event.TurnID,
+		At:               completion.deliveredAt,
+		UserID:           input.userID,
+		UserName:         input.userName,
+		ChatName:         input.chatName,
+		Model:            t.engine.turnModel(state),
+		SessionKey:       input.sessionKey,
+		ConversationID:   t.engine.turnConversationID(t.session, input.sessionKey),
+		Language:         t.engine.i18n.CurrentLang(),
+		Question:         input.question,
+		Answer:           response.base,
+		MessageID:        completion.msgID,
+		Summary:          summary,
+		Duration:         completedTurnDuration(completion.turnStart, completion.deliveredAt),
+		UserWaitDuration: waitDuration,
+		UserWaitTiming:   waitTiming,
+		ToolCount:        completion.toolCount,
+		AgentSessionID:   completion.event.SessionID,
+		AgentTurnID:      completion.event.TurnID,
+	}
+
+	if record.UserWaitDuration < 0 || record.UserWaitDuration > record.Duration {
+		slog.Warn("turn recording rejected invalid user wait duration", "platform", p.Name())
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(completion.terminalDeliveryCtx, 15*time.Second)

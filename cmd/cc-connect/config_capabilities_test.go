@@ -664,6 +664,47 @@ func TestFeishuTopicArchiveConfigValidationMatchesParser(t *testing.T) {
 	}
 }
 
+func TestFeishuArchiveTimingConfigValidatesCompleteMetricsAndAnswersIntent(t *testing.T) {
+	metricKeys := []string{"active_duration", "user_wait_duration", "timed_turn_count", "slow_turn_count", "mean_turn_duration", "slow_turn_ratio"}
+	newOptions := func() map[string]any {
+		mapping := make(map[string]any)
+		for _, key := range metricKeys {
+			mapping[key] = "column_" + key
+		}
+		return map[string]any{"app_id": "cli_synthetic_test", "app_secret": "synthetic-test-secret", "turn_record_fields": mapping}
+	}
+	for _, platform := range []string{"feishu", "lark"} {
+		if err := core.ValidatePlatformOptions(platform, newOptions()); err != nil {
+			t.Fatalf("%s valid metrics rejected: %v", platform, err)
+		}
+		for _, key := range metricKeys {
+			for _, invalid := range []any{nil, true, "", "问题"} {
+				opts := newOptions()
+				fields := opts["turn_record_fields"].(map[string]any)
+				if invalid == nil {
+					delete(fields, key)
+				} else {
+					fields[key] = invalid
+				}
+				if err := core.ValidatePlatformOptions(platform, opts); err == nil || !strings.Contains(err.Error(), key) {
+					t.Fatalf("%s accepted invalid %s=%v: %v", platform, key, invalid, err)
+				}
+			}
+		}
+	}
+	for _, intent := range []string{"平均单轮耗时", "慢回复比例", "扣除用户等待"} {
+		var out bytes.Buffer
+		if err := writeConfigCapabilities(&out, []string{"--platform", "feishu", "--search", intent, "--lang", "zh"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"projects.platforms.options.turn_record_fields", "SUM(active_duration)", "SUM(timed_turn_count)", "历史未知计时排除"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("intent %q missing timing contract %q", intent, want)
+			}
+		}
+	}
+}
+
 func TestEnvironmentContractDefaultsMatchRuntimeConstants(t *testing.T) {
 	catalog := config.CapabilityCatalog("v-test")
 	find := func(path string) core.ConfigOption {

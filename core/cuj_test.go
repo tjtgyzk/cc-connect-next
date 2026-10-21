@@ -2959,6 +2959,9 @@ func TestCUJ_C10_NativeQuestionCardPausesResumesAndRejectsReplay(t *testing.T) {
 			}
 			question := "Check the synthetic device\n\nClarification (Alice):\n✅ Which environment?: **" + environment + "**"
 			assertTurnRecordInput(t, rows[0], key, "original-question", "alice", "Alice", "", question, "Continued in "+environment)
+			if rows[0].UserWaitTiming != "measured" || rows[0].UserWaitDuration <= 0 || rows[0].UserWaitDuration > rows[0].Duration {
+				t.Fatalf("invalid native question timing: wall=%v user=%v provenance=%q", rows[0].Duration, rows[0].UserWaitDuration, rows[0].UserWaitTiming)
+			}
 		})
 	}
 }

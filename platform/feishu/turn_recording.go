@@ -28,24 +28,30 @@ const (
 
 // turnRecordFields maps logical columns to the actual Bitable column names.
 type turnRecordFields struct {
-	Time         string
-	Name         string
-	UserID       string
-	Chat         string
-	Model        string
-	Question     string
-	Answer       string
-	Requester    string
-	Trace        string
-	Duration     string
-	ToolCount    string
-	Summary      string
-	TaskID       string
-	TurnCount    string
-	Conversation string
-	TraceHistory string
-	ArchiveState string
-	RecordKind   string
+	Time             string
+	Name             string
+	UserID           string
+	Chat             string
+	Model            string
+	Question         string
+	Answer           string
+	Requester        string
+	Trace            string
+	Duration         string
+	ToolCount        string
+	Summary          string
+	TaskID           string
+	TurnCount        string
+	Conversation     string
+	TraceHistory     string
+	ArchiveState     string
+	RecordKind       string
+	ActiveDuration   string
+	UserWaitDuration string
+	TimedTurnCount   string
+	SlowTurnCount    string
+	MeanTurnDuration string
+	SlowTurnRatio    string
 }
 
 func defaultTurnRecordFields() turnRecordFields {
@@ -136,6 +142,9 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 			"task_id": &cfg.fields.TaskID, "turn_count": &cfg.fields.TurnCount,
 			"conversation": &cfg.fields.Conversation, "trace_history": &cfg.fields.TraceHistory,
 			"archive_state": &cfg.fields.ArchiveState, "record_kind": &cfg.fields.RecordKind,
+			"active_duration": &cfg.fields.ActiveDuration, "user_wait_duration": &cfg.fields.UserWaitDuration,
+			"timed_turn_count": &cfg.fields.TimedTurnCount, "slow_turn_count": &cfg.fields.SlowTurnCount,
+			"mean_turn_duration": &cfg.fields.MeanTurnDuration, "slow_turn_ratio": &cfg.fields.SlowTurnRatio,
 		}
 		used := map[string]bool{}
 		for _, column := range []string{cfg.fields.Time, cfg.fields.Name, cfg.fields.UserID, cfg.fields.Chat, cfg.fields.Model, cfg.fields.Question, cfg.fields.Answer} {
@@ -144,7 +153,7 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 			}
 			used[column] = true
 		}
-		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary", "task_id", "turn_count", "conversation", "trace_history", "archive_state", "record_kind"} {
+		for _, key := range []string{"requester", "trace", "duration", "tool_count", "summary", "task_id", "turn_count", "conversation", "trace_history", "archive_state", "record_kind", "active_duration", "user_wait_duration", "timed_turn_count", "slow_turn_count", "mean_turn_duration", "slow_turn_ratio"} {
 			if raw, ok := m[key]; ok {
 				column, ok := raw.(string)
 				if !ok {
@@ -161,6 +170,9 @@ func parseTurnRecordOptions(opts map[string]any) (*turnRecordConfig, error) {
 				*optional[key] = column
 			}
 		}
+	}
+	if err := cfg.fields.validateTimingMappings(); err != nil {
+		return nil, err
 	}
 	if cfg.mode == turnRecordModeTopic {
 		for key, value := range map[string]string{"task_id": cfg.fields.TaskID, "turn_count": cfg.fields.TurnCount, "conversation": cfg.fields.Conversation, "trace_history": cfg.fields.TraceHistory, "archive_state": cfg.fields.ArchiveState, "record_kind": cfg.fields.RecordKind} {
@@ -327,6 +339,14 @@ func (r *turnRecorder) write(p *Platform, rec core.TurnRecord) {
 	}
 	if f.Summary != "" && rec.Summary != "" {
 		fields[f.Summary] = rec.Summary
+	}
+	if f.ActiveDuration != "" {
+		var timing turnRecordTimingTotals
+		if err := timing.add(rec); err != nil {
+			slog.Warn(p.tag()+": turn record timing invalid", "error", err, "message_id", rec.MessageID)
+			return
+		}
+		timing.writeFields(fields, f)
 	}
 
 	req := larkbitable.NewCreateAppTableRecordReqBuilder().

@@ -78,6 +78,9 @@ func validateTopicArchive(state topicArchiveState, taskID string) error {
 	}
 	seen := make(map[string]bool)
 	for _, turn := range state.Turns {
+		if err := validateTurnRecordTiming(turn.Record); err != nil {
+			return err
+		}
 		key, err := topicArchiveTurnKey(turn.Record)
 		if err != nil || key != turn.Key || seen[key] || turn.Record.At.IsZero() || turn.Record.Duration < 0 || turn.Record.ToolCount < 0 {
 			return fmt.Errorf("feishu: topic archive contains invalid or duplicate turn state")
@@ -141,7 +144,7 @@ func (r *turnRecorder) topicArchiveFieldTypes() map[string]int {
 			types[name] = 1
 		}
 	}
-	for _, name := range []string{f.Duration, f.ToolCount, f.TurnCount} {
+	for _, name := range []string{f.Duration, f.ToolCount, f.TurnCount, f.ActiveDuration, f.UserWaitDuration, f.TimedTurnCount, f.SlowTurnCount, f.MeanTurnDuration, f.SlowTurnRatio} {
 		if name != "" {
 			types[name] = 2
 		}
@@ -300,6 +303,7 @@ func (r *turnRecorder) topicArchiveFields(state topicArchiveState) (map[string]a
 	var conversation, traces strings.Builder
 	var duration float64
 	var tools int
+	var timing turnRecordTimingTotals
 	language := first.Record.Language
 	if language == core.LangAuto {
 		language = core.LangChinese
@@ -319,6 +323,9 @@ func (r *turnRecorder) topicArchiveFields(state topicArchiveState) (map[string]a
 			fmt.Fprintf(&traces, "%s · %s\n", turnLabel, turn.Record.TraceURL)
 		}
 		duration += turn.Record.Duration.Seconds()
+		if err := timing.add(turn.Record); err != nil {
+			return nil, err
+		}
 		if turn.Record.ToolCount > math.MaxInt-tools {
 			return nil, fmt.Errorf("feishu: topic archive tool count overflow")
 		}
@@ -335,6 +342,7 @@ func (r *turnRecorder) topicArchiveFields(state topicArchiveState) (map[string]a
 	if f.ToolCount != "" {
 		fields[f.ToolCount] = tools
 	}
+	timing.writeFields(fields, f)
 	encoded, err := json.Marshal(state)
 	if err != nil {
 		return nil, fmt.Errorf("feishu: encode topic archive state: %w", err)

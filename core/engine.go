@@ -623,6 +623,7 @@ type interactiveState struct {
 	currentSessionKey   string
 	// Audit input belongs to the adopted presentation, not current credentials.
 	currentTurnRecord        turnRecordInput // guarded by mu
+	currentTurnUserWait      *turnUserWait   // guarded by mu; one clock per native turn, retained by steer
 	lastRecallProbeMessageID string
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
@@ -843,19 +844,26 @@ type modelSwitchState struct {
 
 // pendingPermission represents a permission request waiting for user response.
 type pendingPermission struct {
-	RequestID               string
-	ToolName                string
-	ToolInput               map[string]any
-	InputPreview            string
-	Questions               []UserQuestion  // non-nil for AskUserQuestion
-	Answers                 map[int]string  // collected answers keyed by question index
-	CurrentQuestion         int             // index of the question currently being asked
-	QuestionUserID          string          // owner of the native question turn
-	QuestionToken           string          // random binding for this request's card callbacks
-	questionResponseClaimed bool            // guarded by interactiveState.mu; native write must finish before consuming completion
-	PermissionDone          <-chan struct{} // agent request cancellation/completion
-	Resolved                chan struct{}   // closed when user responds
-	resolveOnce             sync.Once
+	RequestID           string
+	ToolName            string
+	ToolInput           map[string]any
+	InputPreview        string
+	Questions           []UserQuestion // non-nil for AskUserQuestion
+	Answers             map[int]string // collected answers keyed by question index
+	CurrentQuestion     int            // index of the question currently being asked
+	QuestionUserID      string         // owner of the native question turn
+	QuestionToken       string         // random binding for this request's card callbacks
+	responseClaimed     bool           // guarded by interactiveState.mu; native write must finish before consuming completion
+	responseDone        chan struct{}  // one attempt; failure can leave the request retryable
+	waitClock           *turnUserWait
+	waitAgent           AgentSession
+	waitStartedAt       time.Time
+	waitDuration        time.Duration // provisional segments; committed only after accepted response
+	waitPromptDelivered bool
+	waitFinished        bool
+	PermissionDone      <-chan struct{} // agent request cancellation/completion
+	Resolved            chan struct{}   // closed when user responds
+	resolveOnce         sync.Once
 }
 
 func (s *interactiveState) stopSignal() <-chan struct{} {
@@ -3842,6 +3850,7 @@ func (e *Engine) handleVoiceMessage(p Platform, msg *Message) {
 // ──────────────────────────────────────────────────────────────
 
 func (e *Engine) handlePendingPermission(p Platform, msg *Message, content string, interactiveKey string) bool {
+	receivedAt := time.Now()
 	iKey := interactiveKey
 	if iKey == "" {
 		iKey = e.interactiveKeyForSessionKey(msg.SessionKey)
@@ -3901,48 +3910,47 @@ found:
 	}
 
 	lower := strings.ToLower(strings.TrimSpace(content))
-
-	if isApproveAllResponse(lower) {
-		state.mu.Lock()
-		state.approveAll = true
-		state.mu.Unlock()
-
-		if err := state.agentSession.RespondPermission(pending.RequestID, PermissionResult{
-			Behavior:     "allow",
-			UpdatedInput: pending.ToolInput,
-		}); err != nil {
-			slog.Error("failed to send permission response", "error", err)
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionApproveAll))
-		}
-	} else if isAllowResponse(lower) {
-		if err := state.agentSession.RespondPermission(pending.RequestID, PermissionResult{
-			Behavior:     "allow",
-			UpdatedInput: pending.ToolInput,
-		}); err != nil {
-			slog.Error("failed to send permission response", "error", err)
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionAllowed))
-		}
-	} else if isDenyResponse(lower) {
-		if err := state.agentSession.RespondPermission(pending.RequestID, PermissionResult{
-			Behavior: "deny",
-			Message:  "User denied this tool use.",
-		}); err != nil {
-			slog.Error("failed to send deny response", "error", err)
-		}
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionDenied))
-	} else {
+	approveAll, allow, deny := isApproveAllResponse(lower), isAllowResponse(lower), isDenyResponse(lower)
+	deny = deny && !approveAll && !allow
+	if !approveAll && !allow && !deny {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionHint))
 		return true
 	}
-
 	state.mu.Lock()
-	state.pending = nil
+	if state.pending != pending || !state.permissionBindingValidLocked(pending) || pending.responseClaimed || state.stopped || requestDone(pending.PermissionDone) {
+		state.mu.Unlock()
+		return true
+	}
+	state.pausePermissionWaitLocked(pending, receivedAt)
+	pending.responseClaimed = true
+	pending.responseDone = make(chan struct{})
+	agentSession := state.agentSession
 	state.mu.Unlock()
-	pending.resolve()
+	result := PermissionResult{Behavior: "allow", UpdatedInput: pending.ToolInput}
+	if !approveAll && !allow && deny {
+		result = PermissionResult{Behavior: "deny", Message: "User denied this tool use."}
+	}
+	var err error
+	if agentSession == nil {
+		err = fmt.Errorf("agent session unavailable")
+	} else {
+		err = agentSession.RespondPermission(pending.RequestID, result)
+	}
+	if err != nil {
+		state.finishPermissionResponse(pending, agentSession, false, false, time.Now())
+		slog.Error("failed to send permission response", "error", err)
+		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+		return true
+	}
+	state.finishPermissionResponse(pending, agentSession, true, approveAll, time.Now())
+	switch {
+	case approveAll:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionApproveAll))
+	case deny:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionDenied))
+	default:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPermissionAllowed))
+	}
 
 	return true
 }
@@ -4218,6 +4226,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
 	state.currentTurnRecord = msg.turnRecordInputSnapshot()
+	state.currentTurnUserWait = &turnUserWait{}
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
 	state.mu.Unlock()
 	e.activateAgentTurnCredential(state, msg.UserID, msg.SessionKey)
@@ -6910,6 +6919,7 @@ func (queue *turnQueue) handle() {
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
 		state.currentTurnRecord = queued.turnRecordInput
+		state.currentTurnUserWait = &turnUserWait{}
 		state.fromVoice = queued.fromVoice
 		state.currentUserID = queued.userID
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
@@ -7545,11 +7555,14 @@ func (permission *turnPermission) handle() turnReadControl {
 	}
 	state.mu.Lock()
 	pending.QuestionUserID = state.currentUserID
+	pending.waitClock = state.currentTurnUserWait
+	pending.waitAgent = state.agentSession
 	state.pending = pending
 	state.mu.Unlock()
 
+	var promptErr error
 	if isAskQuestion {
-		e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0, pending.QuestionToken)
+		promptErr = e.sendAskQuestionPrompt(p, replyCtx, event.Questions, 0, pending.QuestionToken)
 	} else {
 		permLimit := turnDisplay.ToolMaxLen
 		if permLimit > 0 {
@@ -7557,7 +7570,10 @@ func (permission *turnPermission) handle() turnReadControl {
 		}
 		toolInput := truncateIf(event.ToolInput, permLimit)
 		prompt := fmt.Sprintf(e.i18n.T(MsgPermissionPrompt), event.ToolName, toolInput)
-		e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
+		promptErr = e.sendPermissionPrompt(p, replyCtx, prompt, event.ToolName, toolInput)
+	}
+	if promptErr == nil {
+		state.startPermissionWait(pending, time.Now())
 	}
 
 	// Stop idle timer while waiting for user permission response;
@@ -7573,18 +7589,13 @@ func (permission *turnPermission) handle() turnReadControl {
 		slog.Info("permission resolved", "request_id", event.RequestID)
 	case <-pending.PermissionDone:
 		state.mu.Lock()
-		questionResponseClaimed := pending.questionResponseClaimed
-		if state.pending == pending {
-			state.pending = nil
-		}
+		claimed, responseDone := pending.responseClaimed, pending.responseDone
 		state.mu.Unlock()
-		if questionResponseClaimed {
-			// Native request completion can race ahead of RespondPermission's
-			// success acknowledgement. Let the claimed callback finish its audit
-			// append before consuming a buffered final answer, while retaining
-			// normal stop/cancellation responsiveness.
+		if claimed {
+			// A native request can close before its RPC acknowledgement. Await
+			// this attempt so the answer audit and timing precede a final result.
 			select {
-			case <-pending.Resolved:
+			case <-responseDone:
 			case <-silentCancelCh:
 				permissionInterrupted = true
 			case <-stopCh:
@@ -7592,9 +7603,17 @@ func (permission *turnPermission) handle() turnReadControl {
 			case <-e.ctx.Done():
 				permissionInterrupted = true
 			}
-		} else {
-			pending.resolve()
 		}
+		state.mu.Lock()
+		if !permissionInterrupted {
+			state.finishPermissionWaitLocked(pending, time.Now())
+		}
+		if state.pending == pending {
+			state.pending = nil
+		}
+		state.mu.Unlock()
+		pending.resolve()
+
 	case <-silentCancelCh:
 		permissionInterrupted = true
 	case <-stopCh:
@@ -8545,6 +8564,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		state.replyCtx = queued.replyCtx
 		state.currentMessageID = queued.messageID
 		state.currentTurnRecord = queued.turnRecordInput
+		state.currentTurnUserWait = &turnUserWait{}
 		state.fromVoice = queued.fromVoice
 		state.currentUserID = queued.userID
 		state.currentTurnUserMessageTimeMs = queued.userMessageTimeMs
@@ -13379,7 +13399,7 @@ func videoFormatHint(v FileAttachment) string {
 
 // sendPermissionPrompt sends a permission prompt with interactive buttons when
 // the platform supports them. Fallback chain: InlineButtonSender → CardSender → plain text.
-func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName, toolInput string) {
+func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName, toolInput string) error {
 	e.hooks.Emit(HookEvent{
 		Event:    HookEventPermissionRequested,
 		Platform: p.Name(),
@@ -13400,10 +13420,10 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 		}
 		if err := e.waitOutgoing(p); err != nil {
 			slog.Warn("sendPermissionPrompt: outgoing wait cancelled", "platform", p.Name(), "error", err)
-			return
+			return err
 		}
 		if err := bs.SendWithButtons(e.ctx, replyCtx, prompt, buttons); err == nil {
-			return
+			return nil
 		} else {
 			slog.Warn("sendPermissionPrompt: inline buttons failed, falling back", "error", err)
 		}
@@ -13433,18 +13453,17 @@ func (e *Engine) sendPermissionPrompt(p Platform, replyCtx any, prompt, toolName
 			Buttons(allowAllBtn).
 			Note(e.i18n.T(MsgPermCardNote)).
 			Build()
-		e.sendWithCard(p, replyCtx, card)
-		return
+		return e.sendWithCardError(p, replyCtx, card)
 	}
 
-	e.send(p, replyCtx, prompt)
+	return e.sendWithError(p, replyCtx, prompt)
 }
 
 // sendAskQuestionPrompt renders one question (by index) from the AskUserQuestion list.
 // qIdx is the 0-based index of the question to display.
-func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int, token string) {
-	if qIdx >= len(questions) {
-		return
+func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []UserQuestion, qIdx int, token string) error {
+	if qIdx < 0 || qIdx >= len(questions) {
+		return fmt.Errorf("question index out of range")
 	}
 	q := questions[qIdx]
 	total := len(questions)
@@ -13491,8 +13510,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		}
 		card := cb.Build()
 		card.NotifyReplySender = qIdx == 0
-		e.sendWithCard(p, replyCtx, card)
-		return
+		return e.sendWithCardError(p, replyCtx, card)
 	}
 
 	// Try inline buttons (Telegram)
@@ -13529,10 +13547,10 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		}
 		if err := e.waitOutgoing(p); err != nil {
 			slog.Warn("sendAskQuestionPrompt: outgoing wait cancelled", "platform", p.Name(), "error", err)
-			return
+			return err
 		}
 		if err := bs.SendWithButtons(e.ctx, replyCtx, textBuf.String(), rows); err == nil {
-			return
+			return nil
 		}
 	}
 
@@ -13555,7 +13573,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		sb.WriteString("\n")
 	}
 	fmt.Fprintf(&sb, "\n%s", e.i18n.T(MsgAskQuestionNote))
-	e.send(p, replyCtx, sb.String())
+	return e.sendWithError(p, replyCtx, sb.String())
 }
 
 // waitOutgoingWithContext blocks on the per-platform outgoing rate limiter when enabled.
@@ -13771,22 +13789,26 @@ func (e *Engine) replyWithCard(p Platform, replyCtx any, card *Card) {
 
 // sendWithCard sends a card as a new message (not a reply).
 func (e *Engine) sendWithCard(p Platform, replyCtx any, card *Card) {
+	_ = e.sendWithCardError(p, replyCtx, card)
+}
+
+func (e *Engine) sendWithCardError(p Platform, replyCtx any, card *Card) error {
 	if card == nil {
-		slog.Error("sendWithCard: nil card", "platform", p.Name())
-		return
+		return fmt.Errorf("nil card")
 	}
 	if err := e.waitOutgoing(p); err != nil {
 		slog.Warn("outgoing rate limit: context cancelled", "platform", p.Name(), "error", err)
-		return
+		return err
 	}
 	if cs, ok := p.(CardSender); ok {
 		rendered := e.renderCardForPlatform(p, card)
 		if err := cs.SendCard(e.ctx, replyCtx, rendered); err != nil {
 			slog.Error("card send failed", "platform", p.Name(), "error", err)
+			return err
 		}
-		return
+		return nil
 	}
-	e.send(p, replyCtx, e.renderCardForPlatform(p, card).RenderText())
+	return e.sendWithError(p, replyCtx, e.renderCardForPlatform(p, card).RenderText())
 }
 
 // ──────────────────────────────────────────────────────────────

@@ -4168,7 +4168,7 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 
 ### `projects.platforms.options.turn_record_fields` — `feishu, lark`
 
-将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。 topic 模式另需 task_id（文本/type 1）、turn_count（数字/type 2）、conversation、trace_history、archive_state、record_kind（文本/type 1）映射；archive_state 保存可重算的带版本 JSON 原始归档数据，task_id 与 archive_state 可在视图隐藏但须可写；record_kind 固定写入“主记录”。
+将 time、name、user_id、chat、model、question、answer 映射到已有文本列。新增可选 requester（人员/type 11，同应用 open_id）、trace（超链接/type 15）、duration（数字/type 2，单位秒，含用户等待、不含排队）、tool_count（数字/type 2）、summary（文本/type 1）；默认空，仅配置后写入。映射值须为列名字符串，新增列不得与其他映射重名；启用前须建好对应类型的列。缺失的 trace、summary 不写入；原 user_id 仍为租户 user_id，身份 ID 不作为昵称展示。 topic 模式另需 task_id（文本/type 1）、turn_count（数字/type 2）、conversation、trace_history、archive_state、record_kind（文本/type 1）映射；archive_state 保存可重算的带版本 JSON 原始归档数据，task_id 与 archive_state 可在视图隐藏但须可写；record_kind 固定写入“主记录”。 可选单轮计时指标须整组配置六个互不重名的数字/type 2 列：active_duration（扣除用户等待后的净处理秒数合计）、user_wait_duration（用户等待秒数合计）、timed_turn_count（有效计时轮数）、slow_turn_count（单轮净处理严格超过 300 秒的轮数）、mean_turn_duration（净处理合计/有效轮数）、slow_turn_ratio（慢回复数/有效轮数，0..1）。turn/topic 均支持此组；仅计入总时长大于零、等待计时来源为 measured 或 reconstructed 的轮次，历史未知计时排除，不按零等待处理。无有效样本时两个轮数为零，其余四项为空；duration 仍为累计自然耗时。仪表盘总均值须用 SUM(active_duration)/SUM(timed_turn_count)，慢回复比例用 SUM(slow_turn_count)/SUM(timed_turn_count)，不得平均各话题均值或比例。
 
 - 来源：`toml`
 - 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
@@ -4178,11 +4178,11 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 - 默认值：`built-in seven Chinese column names; enrichment mappings empty`
 - 默认值来源：`builtin`
 - 生效方式：`restart`
-- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要", task_id = "任务ID", turn_count = "交互轮数", conversation = "完整对话", trace_history = "历史Trace", archive_state = "归档数据", record_kind = "归档类型" }`
+- 示例: `turn_record_fields = { time = "时间", name = "昵称", user_id = "user_id", chat = "群名", model = "模型", question = "问题", answer = "答案", requester = "提问人", trace = "Trace", duration = "耗时（秒）", tool_count = "工具调用次数", summary = "摘要", task_id = "任务ID", turn_count = "交互轮数", conversation = "完整对话", trace_history = "历史Trace", archive_state = "归档数据", record_kind = "归档类型", active_duration = "累计净处理耗时（秒）", user_wait_duration = "等待补充耗时（秒）", timed_turn_count = "有效计时轮数", slow_turn_count = "慢回复数", mean_turn_duration = "平均单轮耗时（秒）", slow_turn_ratio = "慢回复比例" }`
 
 ### `projects.platforms.options.turn_record_mode` — `feishu, lark`
 
-选择 turn（每次交付答复一行）或 topic（每个隔离话题及本地 session 一条主记录，/new 新建）。普通无话题消息保持独立。topic 保留首次问题和提问人、最新答案与时间、完整有序多轮对话及 Trace 历史，累计耗时与工具次数；写前验证原生字段类型及带版本的归档状态，按原生 session/turn ID 或消息 ID 跨重启去重，冲突回合及重复任务 ID 拒绝覆盖。每张表只部署一个归档写入实例，不提供跨进程 CAS；队列仍是尽力而为，文本或状态超过 100000 字节时拒绝截断写入，已有记录不自动迁移。
+选择 turn（每次交付答复一行）或 topic（每个隔离话题及本地 session 一条主记录，/new 新建）。普通无话题消息保持独立。topic 保留首次问题和提问人、最新答案与时间、完整有序多轮对话及 Trace 历史，累计耗时与工具次数；写前验证原生字段类型及带版本的归档状态，按原生 session/turn ID 或消息 ID 跨重启去重，冲突回合及重复任务 ID 拒绝覆盖。每张表只部署一个归档写入实例，禁止新旧版本写入实例混跑，不提供跨进程 CAS；队列仍是尽力而为，文本或状态超过 100000 字节时拒绝截断写入，已有记录不自动迁移。
 
 - 来源：`toml`
 - 配置位置：`[projects.platforms.options] (inside one [[projects.platforms]])`
