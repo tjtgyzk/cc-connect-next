@@ -4545,11 +4545,18 @@ func (e *Engine) agentSessionNeedsStart(interactiveKey string, session *Session)
 func (e *Engine) prepareSessionUserBootstrap(p Platform, msg *Message, agent Agent, interactiveKey string, session *Session) ([]string, bool) {
 	bootstrapper, ok := agent.(SessionUserBootstrapper)
 	if !ok {
+		slog.Debug("session user bootstrap: agent has no bootstrapper",
+			"platform", p.Name(), "agent", agent.Name())
 		return nil, true
 	}
 	if !e.agentSessionNeedsStart(interactiveKey, session) {
+		slog.Debug("session user bootstrap: existing agent process is reused",
+			"platform", p.Name(), "agent", agent.Name(), "session", msg.SessionKey)
 		return nil, true
 	}
+	slog.Info("session user bootstrap: starting",
+		"platform", p.Name(), "agent", agent.Name(),
+		"user_id", msg.UserID, "session", msg.SessionKey)
 	notify := func(key MsgKey, args ...interface{}) {
 		text := e.i18n.Tf(key, args...)
 		// Reply in the triggering chat: that is where the user is looking and
@@ -4588,6 +4595,9 @@ func (e *Engine) prepareSessionUserBootstrap(p Platform, msg *Message, agent Age
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgTODSSOLoginFailed, err))
 		return nil, false
 	}
+	slog.Info("session user bootstrap: completed",
+		"platform", p.Name(), "agent", agent.Name(),
+		"user_id", msg.UserID, "env_entries", len(env))
 	return env, true
 }
 

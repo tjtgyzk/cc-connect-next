@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -98,9 +99,17 @@ type pendingLogin struct {
 func newTodSSOManager(raw any) *todSSOManager {
 	cfg := parseTodSSOConfig(raw)
 	if !cfg.enabled {
+		slog.Debug("codex: tod_sso disabled", "configured", raw != nil)
 		return nil
 	}
 	cfg.binary = resolveTodSSOBinary(cfg.binary)
+	slog.Info("codex: tod_sso enabled",
+		"binary", cfg.binary,
+		"cache_dir", cfg.cacheDir,
+		"timeout", cfg.timeout.String(),
+		"force_login", cfg.forceLogin,
+		"platforms", enabledPlatformNames(cfg.platforms),
+	)
 	if _, err := exec.LookPath(cfg.binary); err != nil {
 		// Keep the manager: the binary may be installed later or the configured
 		// path may be provided by a wrapper. The login attempt reports the
@@ -122,6 +131,17 @@ func newTodSSOManager(raw any) *todSSOManager {
 		pending:      make(map[string]*pendingLogin),
 		now:          time.Now,
 	}
+}
+
+func enabledPlatformNames(platforms map[string]bool) []string {
+	names := make([]string, 0, len(platforms))
+	for name, enabled := range platforms {
+		if enabled {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // resolveTodSSOBinary keeps the daemon's often-minimal PATH from hiding the
@@ -246,19 +266,36 @@ func (a *Agent) BootstrapSessionUser(ctx context.Context, user core.SessionUserC
 	a.mu.RLock()
 	manager := a.todSSO
 	a.mu.RUnlock()
-	if manager == nil || !manager.enabledFor(user.Platform) {
+	if manager == nil {
+		slog.Debug("codex: tod_sso bootstrap skipped: not configured",
+			"platform", user.Platform, "user_id", user.UserID)
+		return nil, nil
+	}
+	if !manager.enabledFor(user.Platform) {
+		slog.Debug("codex: tod_sso bootstrap skipped: platform not enabled",
+			"platform", user.Platform, "user_id", user.UserID,
+			"platforms", enabledPlatformNames(manager.cfg.platforms))
 		return nil, nil
 	}
 	if strings.TrimSpace(user.UserID) == "" {
+		slog.Warn("codex: tod_sso bootstrap skipped: empty user ID", "platform", user.Platform)
 		return nil, nil
 	}
+	slog.Info("codex: tod_sso bootstrap started",
+		"platform", user.Platform, "user_id", user.UserID, "session", user.SessionKey)
 	token, err := manager.TokenForUser(ctx, user, notify)
 	if err != nil {
+		slog.Warn("codex: tod_sso bootstrap failed",
+			"platform", user.Platform, "user_id", user.UserID, "error", err)
 		return nil, err
 	}
 	if token == "" {
+		slog.Warn("codex: tod_sso bootstrap returned no token",
+			"platform", user.Platform, "user_id", user.UserID)
 		return nil, nil
 	}
+	slog.Info("codex: tod_sso credential ready",
+		"platform", user.Platform, "user_id", user.UserID)
 	return []string{todSSOTokenEnv + "=" + token}, nil
 }
 
@@ -267,22 +304,32 @@ func (a *Agent) BootstrapSessionUser(ctx context.Context, user core.SessionUserC
 // then continues automatically with the same message.
 func (m *todSSOManager) TokenForUser(ctx context.Context, user core.SessionUserContext, notify func(core.MsgKey, ...interface{})) (string, error) {
 	if token := m.cachedToken(user.UserID); token != "" {
+		slog.Info("codex: tod_sso cache hit", "user_id", user.UserID)
 		return token, nil
 	}
+	slog.Info("codex: tod_sso cache miss", "user_id", user.UserID)
 
 	pending := m.pendingFor(user.UserID)
 	if pending == nil {
+		slog.Info("codex: tod_sso login beginning",
+			"user_id", user.UserID, "force_login", m.cfg.forceLogin)
 		pending = m.startLogin(user, notify)
+	} else {
+		slog.Info("codex: tod_sso login already in progress", "user_id", user.UserID)
 	}
 
 	// Wait until the sign-in link has been delivered, so the user always has
 	// something actionable while the turn waits.
 	select {
 	case <-pending.urlReady:
+		slog.Info("codex: tod_sso login link delivered; waiting for sign-in",
+			"user_id", user.UserID)
 	case <-pending.done:
 	case <-ctx.Done():
+		slog.Warn("codex: tod_sso wait cancelled", "user_id", user.UserID, "error", ctx.Err())
 		return "", ctx.Err()
 	case <-time.After(30 * time.Second):
+		slog.Warn("codex: tod_sso login produced no sign-in URL", "user_id", user.UserID)
 		return "", errors.New("tod-sso login did not report a sign-in URL")
 	}
 
@@ -291,14 +338,18 @@ func (m *todSSOManager) TokenForUser(ctx context.Context, user core.SessionUserC
 	select {
 	case <-pending.done:
 	case <-ctx.Done():
+		slog.Warn("codex: tod_sso wait cancelled", "user_id", user.UserID, "error", ctx.Err())
 		return "", ctx.Err()
 	}
 	if token := m.cachedToken(user.UserID); token != "" {
+		slog.Info("codex: tod_sso login succeeded", "user_id", user.UserID)
 		return token, nil
 	}
 	if pending.err != nil {
+		slog.Warn("codex: tod_sso login failed", "user_id", user.UserID, "error", pending.err)
 		return "", pending.err
 	}
+	slog.Warn("codex: tod_sso login finished without a credential", "user_id", user.UserID)
 	return "", errors.New("tod-sso login finished without a credential")
 }
 
@@ -338,13 +389,19 @@ func (m *todSSOManager) startLogin(user core.SessionUserContext, notify func(cor
 
 		// tod-sso persists one credential for the local OS user, so logins from
 		// different chat users must not run at the same time.
+		slog.Info("codex: tod_sso waiting for login lock", "user_id", user.UserID)
 		m.loginMu.Lock()
 		defer m.loginMu.Unlock()
+		slog.Info("codex: tod_sso login process starting",
+			"user_id", user.UserID, "binary", m.cfg.binary,
+			"timeout", m.loginTimeout().String())
 
 		loginCtx, cancel := context.WithTimeout(context.Background(), m.loginTimeout()+30*time.Second)
 		defer cancel()
 
 		onURL := func(url string) {
+			// Never log the URL itself: it is a one-time sign-in credential.
+			slog.Info("codex: tod_sso login URL received", "user_id", user.UserID)
 			close(pending.urlReady)
 			if notify != nil {
 				notify(core.MsgTODSSOLoginRequired, url)
@@ -352,9 +409,15 @@ func (m *todSSOManager) startLogin(user core.SessionUserContext, notify func(cor
 		}
 		cred, err := m.login(loginCtx, onURL)
 		if err != nil {
+			slog.Warn("codex: tod_sso login process failed",
+				"user_id", user.UserID, "error", err)
 			pending.err = err
 			return
 		}
+		slog.Info("codex: tod_sso login process succeeded",
+			"user_id", user.UserID,
+			"has_refresh_token", strings.TrimSpace(cred.RefreshToken) != "",
+			"expires_at", cred.ExpiresAt)
 		m.storeCredential(todSSOCredential{
 			UserID:       user.UserID,
 			UserName:     user.UserName,
@@ -398,6 +461,8 @@ func (m *todSSOManager) login(ctx context.Context, onURL func(string)) (todSSOCr
 	env, cleanup := m.loginCommandEnv()
 	defer cleanup()
 
+	slog.Info("codex: tod_sso executing login command",
+		"binary", m.cfg.binary, "args", args)
 	cmd := exec.CommandContext(loginCtx, m.cfg.binary, args...)
 	cmd.Env = env
 	stdout, err := cmd.StdoutPipe()
@@ -411,6 +476,7 @@ func (m *todSSOManager) login(ctx context.Context, onURL func(string)) (todSSOCr
 	if err := cmd.Start(); err != nil {
 		return todSSOCredential{}, fmt.Errorf("start tod-sso login: %w", err)
 	}
+	slog.Debug("codex: tod_sso login process spawned", "pid", cmd.Process.Pid)
 
 	tail := &tailBuffer{limit: 4096}
 	var urlOnce sync.Once
@@ -440,6 +506,7 @@ func (m *todSSOManager) login(ctx context.Context, onURL func(string)) (todSSOCr
 	readers.Wait()
 	waitErr := cmd.Wait()
 	if waitErr != nil {
+		slog.Debug("codex: tod_sso login process exited", "error", waitErr)
 		if errors.Is(loginCtx.Err(), context.DeadlineExceeded) {
 			return todSSOCredential{}, fmt.Errorf("tod-sso login timed out after %s", timeout)
 		}
@@ -867,6 +934,11 @@ func (m *todSSOManager) storeCredential(cred todSSOCredential) {
 		m.cacheModTime[cred.UserID] = info.ModTime()
 		m.mu.Unlock()
 	}
+	slog.Info("codex: tod_sso cache written",
+		"path", path,
+		"user_id", cred.UserID,
+		"has_refresh_token", strings.TrimSpace(cred.RefreshToken) != "",
+		"expires_at", cred.ExpiresAt)
 }
 
 // cachePath names one file per user after the platform user ID so the cache is
