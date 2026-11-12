@@ -165,6 +165,32 @@ type SessionEnvInjector interface {
 	SetSessionEnv(env []string)
 }
 
+// SessionUserContext identifies the end user who triggered a turn that may
+// need to start a new Agent process.
+type SessionUserContext struct {
+	Platform   string
+	SessionKey string
+	UserID     string
+	UserName   string
+}
+
+// SessionUserBootstrapper is an optional interface for agents that need to
+// prepare per-user state (for example, credentials) before starting an Agent
+// process. The Engine calls it only when a new process is about to start and
+// merges the returned environment entries into the session environment.
+//
+// notify delivers a localized message to the requesting user. Implementations
+// must not log or return credentials through notify.
+type SessionUserBootstrapper interface {
+	BootstrapSessionUser(ctx context.Context, user SessionUserContext, notify func(MsgKey, ...interface{})) ([]string, error)
+}
+
+// ErrSessionUserBootstrapPending tells the Engine that the user was notified
+// and must complete an out-of-band action (for example, a browser sign-in)
+// before the Agent process can start. The turn ends quietly: the user already
+// received the actionable message, and their next message resumes the flow.
+var ErrSessionUserBootstrapPending = errors.New("session user bootstrap pending user action")
+
 // FormattingInstructionProvider is an optional interface for platforms that
 // provide platform-specific formatting instructions for the agent system prompt
 // (e.g., Slack mrkdwn vs standard Markdown).

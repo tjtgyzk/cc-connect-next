@@ -21,6 +21,11 @@ func init() {
 	options = core.RefineConfigOption(options, "app_server_url", func(option *core.ConfigOption) {
 		option.PresetValues = []core.ConfigPresetValue{{Preset: "starter", Value: "stdio", Description: "Launch a local app-server subprocess.", DescriptionZH: "启动本地 app-server 子进程。"}}
 	})
+	options = core.RefineConfigOption(options, "tod_sso", func(option *core.ConfigOption) {
+		option.Description = "Inject a per-user TOD SSO credential into Codex as MULTICA_SSO_TOKEN. When a new session starts, cc-connect-next resolves the sender's cached token; otherwise it runs `tod-sso login --force --json` without opening a local browser, sends the sign-in link to the user, waits for sign-in to finish, and then starts Codex automatically with the original message. Access and refresh tokens are cached per user in one 0600 JSON file under cache_dir."
+		option.DescriptionZH = "按用户将 TOD SSO 凭据以 MULTICA_SSO_TOKEN 注入 Codex。新会话开始时先查询发送者缓存的 Token；不存在时执行 `tod-sso login --force --json`（不会自动打开本机浏览器），把登录链接发送给用户，等待用户完成登录后自动用原消息启动 Codex。access/refresh token 按用户各存一份到 cache_dir 下的 0600 JSON 文件。"
+	})
+	options = core.ConfigureOptionExample(options, "tod_sso", `tod_sso = { enabled = true }`)
 	options = core.ConfigureOption(options, "reasoning_effort", "unset / adapter default", "low", "medium", "high", "xhigh", "max")
 	options = append(options, core.DescribeAgentOptions([]string{"provider"})...)
 	core.RegisterAgentConfigOptions("codex", options)
@@ -51,6 +56,7 @@ func (a *Agent) KnownOptionKeys() []string {
 		"session_title_prefix",
 		"service_tier",
 		"system_prompt",
+		"tod_sso",
 		"work_dir",
 	}
 }

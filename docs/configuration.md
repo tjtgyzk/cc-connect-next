@@ -2121,6 +2121,20 @@ Set the adapter process timeout in minutes; zero uses its default.
 - Range: `0` to `+∞` `minutes`
 - Example: `timeout_mins = 1`
 
+### `projects.agent.options.tod_sso` — `codex`
+
+Inject a per-user TOD SSO credential into Codex as MULTICA_SSO_TOKEN. When a new session starts, cc-connect-next resolves the sender's cached token; otherwise it runs `tod-sso login --force --json` without opening a local browser, sends the sign-in link to the user, waits for sign-in to finish, and then starts Codex automatically with the original message. Access and refresh tokens are cached per user in one 0600 JSON file under cache_dir.
+
+- Source: `toml`
+- Placement: `[projects.agent.options] (inside one [[projects]])`
+- Scope: `agent` (`codex`)
+- Type: `table`
+- Requirement: `optional`
+- Default: `unset`
+- Default source: `adapter`
+- Takes effect: `restart`
+- Example: `tod_sso = { enabled = true }`
+
 ### `projects.agent.options.tool_timeout_secs` — `iflow`
 
 Set the maximum wait for an iFlow tool call in seconds.

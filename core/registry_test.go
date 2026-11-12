@@ -107,3 +107,42 @@ func TestValidateConfigOptionContract_EnforcesRequiredTypeAndBounds(t *testing.T
 		})
 	}
 }
+
+func TestValidateConfigOptionContract_TableFields(t *testing.T) {
+	options := []ConfigOption{{
+		Key:  "sso",
+		Type: "table",
+		TableFields: map[string]string{
+			"enabled":   "boolean",
+			"timeout":   "string|integer",
+			"platforms": "string[]",
+		},
+	}}
+	tests := []struct {
+		name    string
+		value   any
+		wantErr string
+	}{
+		{name: "all fields", value: map[string]any{
+			"enabled": true, "timeout": "5m", "platforms": []any{"feishu"},
+		}},
+		{name: "integer union", value: map[string]any{"timeout": int64(300)}},
+		{name: "wrong field type", value: map[string]any{"enabled": "yes"}, wantErr: `option "sso" entry "enabled" must be boolean`},
+		{name: "unknown field", value: map[string]any{"enaabled": true}, wantErr: `option "sso" has unknown entry "enaabled"`},
+		{name: "platforms element type", value: map[string]any{"platforms": []any{int64(1)}}, wantErr: `option "sso" entry "platforms" must be string[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateConfigOptionContract("demo", options, map[string]any{"sso": tt.value})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateConfigOptionContract() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -2121,6 +2121,20 @@ Agent 连续指定分钟无事件时终止回合；0 表示禁用。
 - 范围: `0` 到 `+∞` `minutes`
 - 示例: `timeout_mins = 1`
 
+### `projects.agent.options.tod_sso` — `codex`
+
+按用户将 TOD SSO 凭据以 MULTICA_SSO_TOKEN 注入 Codex。新会话开始时先查询发送者缓存的 Token；不存在时执行 `tod-sso login --force --json`（不会自动打开本机浏览器），把登录链接发送给用户，等待用户完成登录后自动用原消息启动 Codex。access/refresh token 按用户各存一份到 cache_dir 下的 0600 JSON 文件。
+
+- 来源：`toml`
+- 配置位置：`[projects.agent.options] (inside one [[projects]])`
+- 作用域：`agent` (`codex`)
+- 类型：`table`
+- 要求：`可选`
+- 默认值：`unset`
+- 默认值来源：`adapter`
+- 生效方式：`restart`
+- 示例: `tod_sso = { enabled = true }`
+
 ### `projects.agent.options.tool_timeout_secs` — `iflow`
 
 设置 iFlow 工具调用最大等待秒数。

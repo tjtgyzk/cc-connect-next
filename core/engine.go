@@ -4191,6 +4191,14 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 		return
 	}
 
+	// Prepare per-user state (for example TOD SSO credentials) before the
+	// Agent process starts. This may block while the user completes an
+	// interactive sign-in, so it must run before taking interactiveMu.
+	bootstrapEnv, ok := e.prepareSessionUserBootstrap(p, msg, agent, interactiveKey, session)
+	if !ok {
+		return
+	}
+
 	turnStart := time.Now()
 
 	turnRichCardCopy := e.i18n.RichCardCopyForText(msg.Content)
@@ -4206,7 +4214,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	if agent != e.agent {
 		agentOverride = agent
 	}
-	state := e.getOrCreateInteractiveStateWith(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey, msg.Content)
+	state := e.getOrCreateInteractiveStateWithEnv(interactiveKey, p, msg.ReplyCtx, session, sessions, agentOverride, ccSessionKey, msg.Content, bootstrapEnv)
 
 	// Set workspaceDir on the state for idle reaper identification
 	if workspaceDir != "" {
@@ -4501,17 +4509,92 @@ func adoptPendingFromPlaceholder(existing, newState *interactiveState) {
 // ccSessionKey, when non-empty, is used for CC_SESSION_KEY env injection; otherwise sessionKey is used.
 // initialTitlePrompt is the request that triggered a fresh backend session.
 func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey, initialTitlePrompt string) *interactiveState {
-	state, freshSession := e.getOrCreateInteractiveState(sessionKey, p, replyCtx, session, sessions, agentOverride, ccSessionKey)
+	return e.getOrCreateInteractiveStateWithEnv(sessionKey, p, replyCtx, session, sessions, agentOverride, ccSessionKey, initialTitlePrompt, nil)
+}
+
+// getOrCreateInteractiveStateWithEnv is getOrCreateInteractiveStateWith plus
+// per-user environment entries prepared by SessionUserBootstrapper. extraEnv is
+// applied only when a new Agent process is actually started.
+func (e *Engine) getOrCreateInteractiveStateWithEnv(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey, initialTitlePrompt string, extraEnv []string) *interactiveState {
+	state, freshSession := e.getOrCreateInteractiveState(sessionKey, p, replyCtx, session, sessions, agentOverride, ccSessionKey, extraEnv)
 	if freshSession != nil {
 		e.initializeFreshSessionTitle(freshSession, initialTitlePrompt)
 	}
 	return state
 }
 
+// agentSessionNeedsStart mirrors the reuse/recycle decision in
+// getOrCreateInteractiveState. It is used to avoid preparing per-user
+// credentials (or prompting for them) when the existing process will be reused.
+func (e *Engine) agentSessionNeedsStart(interactiveKey string, session *Session) bool {
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	state := e.interactiveStates[interactiveKey]
+	if state == nil || state.agentSession == nil || !state.agentSession.Alive() {
+		return true
+	}
+	wantID := session.GetAgentSessionID()
+	currentID := state.agentSession.CurrentSessionID()
+	return currentID != "" && (wantID == "" || wantID != currentID)
+}
+
+// prepareSessionUserBootstrap asks an Agent for per-user environment entries
+// before it starts a new process. The second return value is false when the
+// caller must abandon the turn because preparation failed (the user was
+// already notified).
+func (e *Engine) prepareSessionUserBootstrap(p Platform, msg *Message, agent Agent, interactiveKey string, session *Session) ([]string, bool) {
+	bootstrapper, ok := agent.(SessionUserBootstrapper)
+	if !ok {
+		return nil, true
+	}
+	if !e.agentSessionNeedsStart(interactiveKey, session) {
+		return nil, true
+	}
+	notify := func(key MsgKey, args ...interface{}) {
+		text := e.i18n.Tf(key, args...)
+		// Reply in the triggering chat: that is where the user is looking and
+		// where the platform has already proven it can deliver. A private DM
+		// can silently land in a bot conversation the user never opens.
+		if err := e.sendWithError(p, msg.ReplyCtx, text); err != nil {
+			slog.Warn("session user bootstrap: chat notify failed, trying direct message",
+				"platform", p.Name(), "user_id", msg.UserID, "key", key, "error", err)
+			if sender, ok := p.(DirectUserSender); ok && strings.TrimSpace(msg.UserID) != "" {
+				if directErr := sender.SendDirectUser(e.ctx, msg.UserID, text); directErr != nil {
+					slog.Error("session user bootstrap: direct notify failed",
+						"platform", p.Name(), "user_id", msg.UserID, "key", key, "error", directErr)
+				}
+			}
+			return
+		}
+		slog.Info("session user bootstrap: notified user",
+			"platform", p.Name(), "user_id", msg.UserID, "key", key)
+	}
+	env, err := bootstrapper.BootstrapSessionUser(e.ctx, SessionUserContext{
+		Platform:   p.Name(),
+		SessionKey: msg.SessionKey,
+		UserID:     msg.UserID,
+		UserName:   msg.UserName,
+	}, notify)
+	if err != nil {
+		if errors.Is(err, ErrSessionUserBootstrapPending) {
+			// The Agent already sent the actionable message (for example a
+			// sign-in link). End the turn without starting a process; the
+			// user's next message re-enters this flow and resumes.
+			return nil, false
+		}
+		slog.Error("session user bootstrap failed",
+			"platform", p.Name(), "session", msg.SessionKey,
+			"user_id", msg.UserID, "error", err)
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgTODSSOLoginFailed, err))
+		return nil, false
+	}
+	return env, true
+}
+
 // getOrCreateInteractiveState returns a newly-created backend session
 // separately so optional title generation runs after interactiveMu is released.
 // The caller still initializes the title synchronously before the first turn.
-func (e *Engine) getOrCreateInteractiveState(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string) (*interactiveState, AgentSession) {
+func (e *Engine) getOrCreateInteractiveState(sessionKey string, p Platform, replyCtx any, session *Session, sessions *SessionManager, agentOverride Agent, ccSessionKey string, bootstrapEnv []string) (*interactiveState, AgentSession) {
 	e.interactiveMu.Lock()
 	defer e.interactiveMu.Unlock()
 
@@ -4599,6 +4682,9 @@ func (e *Engine) getOrCreateInteractiveState(sessionKey string, p Platform, repl
 				envVars = append(envVars, "PATH="+binDir)
 			}
 		}
+		// Per-user bootstrap env (credentials) comes last so it overrides any
+		// same-named values inherited from config or the daemon environment.
+		envVars = append(envVars, bootstrapEnv...)
 		inj.SetSessionEnv(envVars)
 	}
 

@@ -52,6 +52,7 @@ type Agent struct {
 	providerstate.Store
 	configEnv  []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
 	sessionEnv []string
+	todSSO     *todSSOManager // optional per-user TOD SSO token injection
 	mu         sync.RWMutex
 }
 
@@ -120,6 +121,7 @@ func New(opts map[string]any) (core.Agent, error) {
 		cmd:                cmd,
 		cliExtraArgs:       cliExtraArgs,
 		configEnv:          configEnv,
+		todSSO:             newTodSSOManager(opts["tod_sso"]),
 		Store:              providerstate.New("codex"),
 	}, nil
 }

@@ -95,6 +95,7 @@ type ConfigOption struct {
 	Maximum          *float64            `json:"maximum,omitempty"`
 	Unit             string              `json:"unit,omitempty"`
 	Values           []string            `json:"allowed_values,omitempty"`
+	TableFields      map[string]string   `json:"table_fields,omitempty"`
 	ClosedValues     bool                `json:"closed_values,omitempty"`
 	OpenValues       bool                `json:"open_values,omitempty"`
 	Description      string              `json:"description"`
@@ -553,6 +554,7 @@ func DescribePlatformOptions(keys []string) []ConfigOption {
 type optionDoc struct {
 	typeName, defaultValue string
 	values                 []string
+	tableFields            map[string]string
 	openValues             bool
 	description, zh        string
 	keywords               []string
@@ -599,6 +601,7 @@ func documentedOption(key string, doc optionDoc) ConfigOption {
 	}
 	return FinalizeConfigOption(ConfigOption{
 		Key: key, Type: doc.typeName, Default: doc.defaultValue, Values: append([]string(nil), doc.values...), OpenValues: doc.openValues,
+		TableFields: doc.tableFields,
 		Description: doc.description, DescriptionZH: doc.zh, Keywords: append([]string(nil), doc.keywords...),
 		ApplyMode: doc.apply, Sensitive: doc.sensitive, Internal: doc.internal, Example: doc.example,
 		DefaultSource: doc.defaultSource, Requirement: doc.requirement,
@@ -655,9 +658,24 @@ func agentOption(key string) ConfigOption {
 		"system_prompt":        {description: "Replace the Agent's default system prompt for this project.", zh: "替换当前项目中 Agent 的默认系统提示。", keywords: []string{"系统提示词"}},
 		"thinking":             {description: "Configure the pi Agent's thinking mode or level.", zh: "配置 pi Agent 的思考模式或级别。"},
 		"timeout_mins":         {typeName: "integer", minimum: configFloat64(0), unit: "minutes", description: "Set the adapter process timeout in minutes; zero uses its default.", zh: "设置适配器进程超时分钟数；0 使用默认值。"},
-		"tool_timeout_secs":    {typeName: "integer", minimum: configFloat64(0), unit: "seconds", description: "Set the maximum wait for an iFlow tool call in seconds.", zh: "设置 iFlow 工具调用最大等待秒数。"},
-		"window_per_session":   {typeName: "bool", defaultValue: "false", description: "Use a separate tmux window for every cc-connect-next session.", zh: "为每个 cc-connect-next 会话使用独立 tmux window。"},
-		"work_dir":             {defaultValue: ".", conflictsWith: []string{"projects.mode = multi-workspace"}, description: "Set the project working directory used by the Agent.", zh: "设置 Agent 使用的项目工作目录。", keywords: []string{"cwd", "工作目录"}, example: `work_dir = "/absolute/path/to/project"`},
+		"tod_sso": {
+			typeName: "table",
+			tableFields: map[string]string{
+				"enabled":     "boolean",
+				"binary":      "string",
+				"login_url":   "string",
+				"cache_dir":   "string",
+				"timeout":     "string|integer",
+				"force_login": "boolean",
+				"platforms":   "string[]",
+			},
+			description: "Inject a per-user TOD SSO token and cache access/refresh tokens per platform user.",
+			zh:          "按平台用户注入 TOD SSO Token，并为每个用户缓存 access/refresh token。",
+			keywords:    []string{"sso", "单点登录", "token 缓存"},
+		},
+		"tool_timeout_secs":  {typeName: "integer", minimum: configFloat64(0), unit: "seconds", description: "Set the maximum wait for an iFlow tool call in seconds.", zh: "设置 iFlow 工具调用最大等待秒数。"},
+		"window_per_session": {typeName: "bool", defaultValue: "false", description: "Use a separate tmux window for every cc-connect-next session.", zh: "为每个 cc-connect-next 会话使用独立 tmux window。"},
+		"work_dir":           {defaultValue: ".", conflictsWith: []string{"projects.mode = multi-workspace"}, description: "Set the project working directory used by the Agent.", zh: "设置 Agent 使用的项目工作目录。", keywords: []string{"cwd", "工作目录"}, example: `work_dir = "/absolute/path/to/project"`},
 	}
 	return documentedOption(key, docs[key])
 }

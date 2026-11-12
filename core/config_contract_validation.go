@@ -29,7 +29,14 @@ func ValidateConfigOptionContract(owner string, options []ConfigOption, values m
 			return fmt.Errorf("%s: option %q must be %s, got %T", owner, option.Key, option.Type, value)
 		}
 		if configTypeIncludes(option.Type, "table") {
-			if key, child, ok := firstNonStringTableEntry(value); ok {
+			if len(option.TableFields) > 0 {
+				if key, want, child, ok, err := validateTableFields(value, option.TableFields); !ok {
+					if err != nil {
+						return fmt.Errorf("%s: option %q %w", owner, option.Key, err)
+					}
+					return fmt.Errorf("%s: option %q entry %q must be %s, got %T", owner, option.Key, key, want, child)
+				}
+			} else if key, child, ok := firstNonStringTableEntry(value); ok {
 				return fmt.Errorf("%s: option %q entry %q must be string, got %T", owner, option.Key, key, child)
 			}
 		}
@@ -87,6 +94,36 @@ func firstNonStringTableEntry(value any) (string, any, bool) {
 		}
 	}
 	return "", nil, false
+}
+
+// validateTableFields checks a declared table schema. It returns ok=false with
+// a key/type/child triple on a type mismatch, or an error for unknown entries.
+func validateTableFields(value any, fields map[string]string) (string, string, any, bool, error) {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() || rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return "", "", nil, true, nil
+	}
+	entries := make(map[string]any, rv.Len())
+	iter := rv.MapRange()
+	for iter.Next() {
+		entries[iter.Key().String()] = iter.Value().Interface()
+	}
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		want, declared := fields[key]
+		if !declared {
+			return "", "", nil, false, fmt.Errorf("has unknown entry %q", key)
+		}
+		child := entries[key]
+		if !configValueMatchesType(child, want) {
+			return key, want, child, false, nil
+		}
+	}
+	return "", "", nil, true, nil
 }
 
 func configContractContains(values []string, target string) bool {

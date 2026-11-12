@@ -286,6 +286,11 @@ const (
 	MsgVoiceTranscribeFailed         MsgKey = "voice_transcribe_failed"
 	MsgVoiceEmpty                    MsgKey = "voice_empty"
 
+	MsgTODSSOLoginRequired MsgKey = "tod_sso_login_required"
+	MsgTODSSOLoginPending  MsgKey = "tod_sso_login_pending"
+	MsgTODSSOLoggedIn      MsgKey = "tod_sso_logged_in"
+	MsgTODSSOLoginFailed   MsgKey = "tod_sso_login_failed"
+
 	MsgTTSNotEnabled MsgKey = "tts_not_enabled"
 	MsgTTSStatus     MsgKey = "tts_status"
 	MsgTTSSwitched   MsgKey = "tts_switched"
@@ -1814,6 +1819,34 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🎙 語音訊息需要 `ffmpeg` 進行格式轉換，請安裝 ffmpeg。",
 		LangJapanese:           "🎙 音声メッセージのフォーマット変換に `ffmpeg` が必要です。ffmpeg をインストールしてください。",
 		LangSpanish:            "🎙 Los mensajes de voz requieren `ffmpeg` para la conversión de formato. Instale ffmpeg.",
+	},
+	MsgTODSSOLoginRequired: {
+		LangEnglish:            "🔐 TOD SSO login is required before Codex can start. Open this link in your browser and finish sign-in; Codex will start automatically:\n%s",
+		LangChinese:            "🔐 启动 Codex 前需要登录 TOD SSO。请在浏览器中打开以下链接完成登录，登录成功后会自动启动 Codex：\n%s",
+		LangTraditionalChinese: "🔐 啟動 Codex 前需要登入 TOD SSO。請在瀏覽器中開啟以下連結完成登入，登入成功後會自動啟動 Codex：\n%s",
+		LangJapanese:           "🔐 Codex を起動する前に TOD SSO へのログインが必要です。次のリンクをブラウザで開いてログインしてください。ログイン後は自動的に Codex を起動します:\n%s",
+		LangSpanish:            "🔐 Se requiere iniciar sesión en TOD SSO antes de iniciar Codex. Abra este enlace en su navegador y complete el inicio de sesión; Codex se iniciará automáticamente:\n%s",
+	},
+	MsgTODSSOLoginPending: {
+		LangEnglish:            "⏳ TOD SSO sign-in is still pending. Finish it in the browser, then reply to this chat to continue.",
+		LangChinese:            "⏳ TOD SSO 登录尚未完成。请先在浏览器完成登录，然后回复本消息以继续。",
+		LangTraditionalChinese: "⏳ TOD SSO 登入尚未完成。請先在瀏覽器完成登入，然後回覆本訊息以繼續。",
+		LangJapanese:           "⏳ TOD SSO ログインはまだ完了していません。ブラウザで完了してから、このメッセージに返信してください。",
+		LangSpanish:            "⏳ El inicio de sesión de TOD SSO aún está pendiente. Complételo en el navegador y responda a este mensaje para continuar.",
+	},
+	MsgTODSSOLoggedIn: {
+		LangEnglish:            "✅ TOD SSO sign-in complete. Starting Codex…",
+		LangChinese:            "✅ TOD SSO 登录成功，正在启动 Codex…",
+		LangTraditionalChinese: "✅ TOD SSO 登入成功，正在啟動 Codex…",
+		LangJapanese:           "✅ TOD SSO ログインが完了しました。Codex を起動します…",
+		LangSpanish:            "✅ Inicio de sesión de TOD SSO completado. Iniciando Codex…",
+	},
+	MsgTODSSOLoginFailed: {
+		LangEnglish:            "❌ TOD SSO sign-in failed: %v",
+		LangChinese:            "❌ TOD SSO 登录失败：%v",
+		LangTraditionalChinese: "❌ TOD SSO 登入失敗：%v",
+		LangJapanese:           "❌ TOD SSO ログインに失敗しました: %v",
+		LangSpanish:            "❌ Error al iniciar sesión en TOD SSO: %v",
 	},
 	MsgVoiceTranscribing: {
 		LangEnglish:            "🎙 Transcribing voice message...",

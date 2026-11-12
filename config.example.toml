@@ -1708,6 +1708,37 @@ app_secret = "your-feishu-app-secret"
 # system_prompt 同时使用。
 # append_system_prompt = "Always respond in Chinese and prefer concise answers."
 #
+# Optional: per-user TOD SSO credentials / 可选：按用户注入 TOD SSO 凭据
+# When enabled, cc-connect-next resolves the Feishu sender's TOD SSO token
+# before a new Codex process starts and injects it as MULTICA_SSO_TOKEN.
+# Each platform user owns one 0600 JSON file under cache_dir named after the
+# user ID (for example ou_xxx.json); it holds token, refresh_token and
+# expires_at, so it can be inspected, edited or deleted directly. When no
+# token exists, `tod-sso login --force --json` runs without opening a browser
+# on this host, the sign-in link is sent to the requesting user, and the same
+# message continues automatically once sign-in finishes. Both the access token
+# and refresh token are cached before Codex starts.
+# 启用后，新 Codex 进程启动前会按飞书发送者查询 TOD SSO Token，并以
+# MULTICA_SSO_TOKEN 注入。每个平台用户在 cache_dir 下拥有一个以其 ID 命名的
+# 0600 JSON 文件（例如 ou_xxx.json），内含 token、refresh_token 和
+# expires_at，可直接查看、编辑或删除。没有 Token 时执行
+# `tod-sso login --force --json`（不会自动打开本机浏览器），把登录链接发送给
+# 发起用户；用户完成登录后自动缓存 access/refresh token，并用原消息启动
+# Codex。
+# [projects.agent.options.tod_sso]
+# enabled = true
+# binary = "tod-sso"            # executable name or absolute path / 可执行文件名或绝对路径
+# login_url = "https://queqiao.nioint.com/context-nio/auth/tod-sso"
+# cache_dir = "~/.cc-connect-next/tod-sso"
+# timeout = "5m"                # interactive login timeout / 交互登录超时
+# force_login = true            # true = always run `tod-sso login --force` for a user
+#                               # without a cache file (recommended when the daemon serves
+#                               # multiple Feishu users); false = let tod-sso reuse an
+#                               # existing local credential
+#                               # true = 用户没有缓存文件时始终执行 `tod-sso login --force`；
+#                               # false = 允许 tod-sso 复用本机已有凭据
+# platforms = ["feishu"]        # restrict injection to these platforms / 仅对这些平台生效
+#
 # # Active provider / 当前激活的 provider
 # # provider = "openai"
 #
