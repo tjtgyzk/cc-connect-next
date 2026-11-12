@@ -1,0 +1,28 @@
+core/engine.go
+  s_da8c471b2043f6::t_c0e7401c999252 4548-4549,4553-4554,4557-4559,4598-4600
+agent/codex/tod_sso.go
+  s_da8c471b2043f6::t_00151384f64090 937-941
+  s_da8c471b2043f6::t_e8590356efb35e 17
+  s_da8c471b2043f6::t_a90d9257644f2d 269-277,281,284-285,288-289,293-294,297-298
+  s_da8c471b2043f6::t_b8492d1312d766 307,310,314-315,317-318,325-326,329,332,341,345,349,352
+  s_da8c471b2043f6::t_256db1d312b4e2 102,106-112,136-144
+  s_da8c471b2043f6::t_9672e7d5eaf293 464-465,479,509
+  s_da8c471b2043f6::t_1178126714ec70 392,395-397,403-404,412-413,417-420
+  s_da8c471b2043f6::t_ff24a192162868 145-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "83340f38c745adf7c5e95daff3d5ed264d169a07",
+  "prompts": {},
+  "sessions": {
+    "s_da8c471b2043f6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1cee3-e9c8-7800-a105-2dd285d85092",
+        "model": "DeepSeek-V4.1-Flash"
+      },
+      "human_author": "phil.ma <phil.ma@nio.com>"
+    }
+  }
+}
